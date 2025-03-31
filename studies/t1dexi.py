@@ -112,7 +112,7 @@ class T1DEXI(StudyDataset):
 
         bolus_rows.loc[:,'INSNMBOL'] = bolus_rows.INSNMBOL.fillna(0)
         bolus_rows.loc[:,'INSEXBOL'] = bolus_rows.INSEXBOL.fillna(0)
-                
+
         #split extended and normal bolus rows
         normal   = bolus_rows.loc[bolus_rows.INSNMBOL>0][['USUBJID','FADTC','FADUR','INSNMBOL']].copy()
         normal = normal.rename(columns={'INSNMBOL':self.COL_NAME_BOLUS})
@@ -121,7 +121,7 @@ class T1DEXI(StudyDataset):
         extended = extended.rename(columns={'INSEXBOL': self.COL_NAME_BOLUS})
         #merge back into single dataframe
         bolus_rows = pd.concat([normal,extended],ignore_index=True)
-    
+
         # Reduce, Rename
         bolus_rows = bolus_rows.rename(columns={'USUBJID': self.COL_NAME_PATIENT_ID, 
                                                 'FADTC': self.COL_NAME_DATETIME,
