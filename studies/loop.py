@@ -100,7 +100,7 @@ class Loop(StudyDataset):
         # Reduce, Rename
         ddf = ddf.drop(columns=['PtTimezoneOffset', 'RecordType'])
 
-        ddf  = ddf.rename(columns={'PtID': self.COL_NAME_PATIENT_ID,
+        ddf = ddf.rename(columns={'PtID': self.COL_NAME_PATIENT_ID,
                                    'UTCDtTm': self.COL_NAME_DATETIME,
                                    'CGMVal': self.COL_NAME_CGM}) 
         
