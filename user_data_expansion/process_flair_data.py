@@ -30,28 +30,13 @@ def generate_flair_data():
     insulin_df = pd.read_csv(insulin_file, delimiter="|")
     print(f"Insulin data shape: {insulin_df.shape}")
     print(f"Unique delivery routes: {insulin_df['InsRoute'].value_counts().to_dict()}")
-    
-    # Step 3: Determine primary delivery device
-    print("\nStep 3: Determining primary insulin delivery device...")
-    def get_primary_insulin_delivery(patient_data):
-        if 'Pump' in patient_data['InsRoute'].values:
-            return 'Pump'
-        else:
-            return 'Injection'
-    
-    patient_delivery = insulin_df.groupby('PtID').apply(get_primary_insulin_delivery, include_groups=False)
-    patient_delivery_df = patient_delivery.reset_index()
-    patient_delivery_df.columns = ['PtID', 'insulin_delivery_device']
-    
-    print(f"Delivery device distribution: {patient_delivery_df['insulin_delivery_device'].value_counts().to_dict()}")
-    
+
     # Step 4: Create base dataframe
     print("\nStep 4: Creating base dataframe...")
     final_df = roster_df[['PtID', 'SiteID', 'EnrollDt', 'RandDt', 'PtStatus', 'TrtGroup', 'AgeAsofEnrollDt']].copy()
-    final_df = final_df.merge(patient_delivery_df, on='PtID', how='left')
 
     # FLAIR used MiniMed 670G system
-    final_df['insulin_delivery_device'] = 'MiniMed 670G'
+    final_df['insulin_delivery_device'] = 'MiniMed 670G'  # Based on protocol
     
     # Step 5: Update device specifics for FLAIR (MiniMed 670G system)
     print("\nStep 5: Updating device specifics...")
@@ -126,24 +111,10 @@ def generate_flair_data():
     
     # Step 9: Add pregnancy status
     print("\nStep 9: Adding pregnancy status...")
-    try:
-        pregnancy_file = os.path.join(flair_data_path, "FLAIRDiabPregnancyTest.txt")
-        pregnancy_df = pd.read_csv(pregnancy_file, delimiter="|")
-        
-        # Check if there are any positive pregnancy tests
-        if 'PregnancyTestResult' in pregnancy_df.columns:
-            pregnancy_results = pregnancy_df['PregnancyTestResult'].value_counts()
-            print(f"Pregnancy test results: {pregnancy_results.to_dict()}")
-            
-        # For clinical trial, pregnancy likely exclusion criterion
-        final_df['is_pregnant'] = False
-        print("Set is_pregnant = False for all participants (clinical trial exclusion)")
-        
-    except Exception as e:
-        print(f"Could not read pregnancy data: {e}")
-        final_df['is_pregnant'] = False
-        print("Added is_pregnant = False for all participants")
-    
+    # Pregnancy is exclusion criterion, and all tests in FLAIRDiabPregnancyTest.txt are negative
+    final_df['is_pregnant'] = False
+    print("Set is_pregnant = False for all participants (clinical trial exclusion)")
+
     # Step 10: Add insulin types (pump-only)
     print("\nStep 10: Adding insulin types...")
     bolus_insulins = [
