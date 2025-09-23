@@ -236,6 +236,7 @@ def update_dclp3_data(df):
     print(f"\nStandardization complete for {len(df)} participants")
     return df
 
+
 def process_s3_data(df_expansion_data_copy):
     """Process DCLP3 data with S3 integration"""
     print("\n" + "=" * 50)
@@ -255,7 +256,29 @@ def process_s3_data(df_expansion_data_copy):
         df = pd.read_csv(StringIO(content))
         print(f"✓ Successfully loaded S3 data: {df.shape}")
 
-        # TODO: Overwrite the matching columns of df with the df_expansion_data_copy. the values should be block sparse per id
+        # Step 2: Overwrite matching columns with expansion data (block sparse per id)
+        print("\nStep 2: Merging expansion data with S3 data...")
+        matching_columns = [col for col in df_expansion_data_copy.columns if col in df.columns]
+        print(f"Found {len(matching_columns)} matching columns: {matching_columns}")
+        
+        # Create a mapping of id to expansion data for efficient lookup
+        expansion_dict = df_expansion_data_copy.set_index('id').to_dict('index')
+        
+        # Update matching columns for each id that exists in both datasets
+        updated_count = 0
+        for idx, row in df.iterrows():
+            patient_id = row['id']
+            if patient_id in expansion_dict:
+                expansion_row = expansion_dict[patient_id]
+                for col in matching_columns:
+                    if col != 'id' and col in expansion_row:
+                        # Only update if expansion data has a non-null value
+                        expansion_value = expansion_row[col]
+                        if pd.notna(expansion_value):
+                            df.at[idx, col] = expansion_value
+                updated_count += 1
+        
+        print(f"✓ Updated {updated_count} patient records with expansion data")
 
 
         # Step 4: Convert weight/height units
@@ -273,9 +296,51 @@ def process_s3_data(df_expansion_data_copy):
                 df[height_col] = df[height_col] / 30.48
                 print(f"✓ Converted {height_col} from cm to feet")
 
-        # TODO: Save the updated df locally
+        # Step 5: Save the updated df locally
+        print("\nStep 5: Saving updated dataframe locally...")
+        output_file = "DCLP3_s3_merged.csv"
+        df.to_csv(output_file, index=False)
+        print(f"✓ Saved merged S3 dataframe to: {output_file}")
+        print(f"  Final merged dataset shape: {df.shape}")
 
-        # TODO: Do a value_counts including nans with the updated df
+        # Step 6: Analyze updated dataframe with value counts (including NaNs)
+        print("\nStep 6: Analyzing merged dataframe...")
+        print("Value counts for key categorical columns (including NaNs):")
+        
+        categorical_columns = [
+            'insulin_delivery_device', 'insulin_delivery_algorithm', 'cgm_device',
+            'ethnicity', 'insulin_delivery_modality', 'insulin_type_bolus', 'insulin_type_basal'
+        ]
+        
+        for col in categorical_columns:
+            if col in df.columns:
+                print(f"\n{col}:")
+                counts = df[col].value_counts(dropna=False)
+                for value, count in counts.items():
+                    print(f"  {value}: {count}")
+        
+        # Summary statistics for numerical columns
+        numerical_columns = ['age_of_diagnosis']
+        for col in numerical_columns:
+            if col in df.columns:
+                print(f"\n{col} statistics:")
+                print(f"  Count (non-null): {df[col].count()}")
+                print(f"  Count (null): {df[col].isna().sum()}")
+                if df[col].count() > 0:
+                    print(f"  Mean: {df[col].mean():.2f}")
+                    print(f"  Min: {df[col].min():.2f}")
+                    print(f"  Max: {df[col].max():.2f}")
+        
+        print(f"\nOverall dataset summary:")
+        print(f"  Total rows: {len(df)}")
+        print(f"  Total columns: {len(df.columns)}")
+        print(f"  Missing values per column:")
+        missing_counts = df.isna().sum()
+        for col, missing_count in missing_counts.items():
+            if missing_count > 0:
+                print(f"    {col}: {missing_count}")
+        
+        return df
 
     except Exception as e:
         print(f"Error in S3 processing: {e}")
