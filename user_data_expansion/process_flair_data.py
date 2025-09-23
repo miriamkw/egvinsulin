@@ -6,6 +6,7 @@ Process FLAIR data: Generate user data expansion and apply standardizations
 import pandas as pd
 import numpy as np
 import os
+from helpers import get_pump_insulin_types_for_patient, process_s3_data
 
 def generate_flair_data():
     """Generate FLAIR user data expansion following DCLP3/DCLP5 pattern"""
@@ -29,7 +30,6 @@ def generate_flair_data():
     insulin_file = os.path.join(flair_data_path, "FLAIRInsulin.txt")
     insulin_df = pd.read_csv(insulin_file, delimiter="|")
     print(f"Insulin data shape: {insulin_df.shape}")
-    print(f"Unique delivery routes: {insulin_df['InsRoute'].value_counts().to_dict()}")
 
     # Step 4: Create base dataframe
     print("\nStep 4: Creating base dataframe...")
@@ -115,44 +115,12 @@ def generate_flair_data():
     final_df['is_pregnant'] = False
     print("Set is_pregnant = False for all participants (clinical trial exclusion)")
 
-    # Step 10: Add insulin types (pump-only)
+    # Step 10: Add insulin types (pump-only) using improved helper function
     print("\nStep 10: Adding insulin types...")
-    bolus_insulins = [
-        'Novolog (Aspart)', 'Humalog (Lispro)', 'Novolog Fiasp',
-        'Regular (R) (Humulin R or Novolin R)', 'Admelog'
-    ]
-    
-    basal_insulins = [
-        'Lantus (Glargine) 2 times per day', 'Lantus (Glargine) 1 time per day', 
-        'Degludec (Tresiba)', 'Toujeo (Glargine, U300)', 
-        'Basaglar (Glargine, U100)', 'Levemir (Detemir) 1 time per day'
-    ]
-    
-    def get_pump_insulin_types_for_patient(ptid, insulin_data):
-        patient_pump_insulin = insulin_data[(insulin_data['PtID'] == ptid) & (insulin_data['InsRoute'] == 'Pump')]
-        
-        bolus_insulins_found = []
-        basal_insulins_found = []
-        
-        for _, row in patient_pump_insulin.iterrows():
-            insulin_name = row['InsulinName']
-            if pd.notna(insulin_name):
-                if insulin_name in bolus_insulins:
-                    bolus_insulins_found.append(insulin_name)
-                elif insulin_name in basal_insulins:
-                    basal_insulins_found.append(insulin_name)
-        
-        bolus_unique = list(set(bolus_insulins_found))
-        basal_unique = list(set(basal_insulins_found))
-        
-        bolus_result = '; '.join(bolus_unique) if bolus_unique else np.nan
-        basal_result = '; '.join(basal_unique) if basal_unique else np.nan
-        
-        return bolus_result, basal_result
     
     pump_insulin_results = []
     for ptid in final_df['PtID']:
-        bolus, basal = get_pump_insulin_types_for_patient(ptid, insulin_df)
+        bolus, basal = get_pump_insulin_types_for_patient(ptid, insulin_df, insulin_name_column='InsulinName')
         pump_insulin_results.append({
             'PtID': ptid,
             'insulin_type_bolus': bolus,
@@ -304,6 +272,14 @@ def main():
     df.to_csv(output_file, index=False)
     
     print(f"✓ Saved FLAIR dataframe to: {output_file}")
+    
+    # Step 4: Process S3 data if available
+    print("\nAttempting S3 data processing...")
+    s3_df = process_s3_data(df.copy(), 'Flair')
+    if s3_df is not None:
+        print("✓ S3 processing completed successfully")
+    else:
+        print("⚠ S3 processing failed, continuing with local data only")
     
     # Final summary
     print("\n" + "=" * 70)
