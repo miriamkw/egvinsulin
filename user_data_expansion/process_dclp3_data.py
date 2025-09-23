@@ -17,7 +17,7 @@ def generate_dclp3_data():
     
     print("DCLP3 User Data Expansion Pipeline")
     print("=" * 50)
-    
+
     # Step 1: Read roster
     print("Step 1: Reading participant roster...")
     roster_file = os.path.join(dclp3_data_path, "PtRoster_a.txt")
@@ -55,6 +55,8 @@ def generate_dclp3_data():
     # Step 5: Update device specifics
     print("\nStep 5: Updating device specifics...")
     final_df['insulin_delivery_device'] = final_df['insulin_delivery_device'].replace('Pump', 't:slim X2')
+
+    print(final_df['trtGroup'].value_counts(dropna=False))
     final_df['insulin_delivery_algorithm'] = final_df['trtGroup'].map({
         'SAP': 'basal-bolus',
         'CLC': 'Control-IQ'
@@ -65,31 +67,7 @@ def generate_dclp3_data():
     
     # Step 6: Add CGM device
     print("\nStep 6: Adding CGM device information...")
-    try:
-        dexcom_clarity_file = os.path.join(dclp3_data_path, "DexcomClarityCGM_a.txt")
-        dexcom_clarity_df = pd.read_csv(dexcom_clarity_file, delimiter="|", encoding='utf-16')
-        dexcom_ptids = set(dexcom_clarity_df['PtID'].unique())
-        
-        other_cgm_file = os.path.join(dclp3_data_path, "OtherCGM_a.txt")
-        other_cgm_df = pd.read_csv(other_cgm_file, delimiter="|", encoding='utf-16')
-        other_cgm_ptids = set(other_cgm_df['PtID'].unique())
-        
-        all_cgm_ptids = dexcom_ptids.union(other_cgm_ptids)
-        
-        def assign_cgm_device(ptid):
-            if ptid in all_cgm_ptids:
-                return "Dexcom G5"  # DCLP3 used G5 (2017-2018 era)
-            else:
-                return np.nan
-        
-        final_df['cgm_device'] = final_df['PtID'].apply(assign_cgm_device)
-        
-        print(f"CGM coverage: {len(all_cgm_ptids)} out of {len(final_df)} participants")
-        print(f"CGM device distribution: {final_df['cgm_device'].value_counts(dropna=False).to_dict()}")
-        
-    except Exception as e:
-        print(f"Error reading CGM data: {e}")
-        final_df['cgm_device'] = "Dexcom G5"  # Default for DCLP3 era
+    final_df['cgm_device'] = "Dexcom G6"  # As stated in the protocol, all will use Dexcom G6
     
     # Step 7: Add ethnicity
     print("\nStep 7: Adding ethnicity information...")
@@ -270,92 +248,38 @@ def process_s3_data(df_expansion_data_copy):
     try:
         # Step 1: Load from S3
         print("Step 1: Loading data from S3...")
-        obj_key = f'processed_data_final/{file_name}'
+        obj_key = f'processed_data_final_expanded/{file_name}'
         s3 = boto3.client("s3")
         obj_response = s3.get_object(Bucket=bucket_name, Key=obj_key)
         content = obj_response["Body"].read().decode("utf-8")
         df = pd.read_csv(StringIO(content))
         print(f"✓ Successfully loaded S3 data: {df.shape}")
-        
-        # Step 2: Merge datasets
-        print("\nStep 2: Merging datasets...")
-        merged_df = df.merge(df_expansion_data_copy, on="id", how="left")
-        print(f"✓ Merged data: {merged_df.shape}")
-        
-        # Step 3: Drop old insulin_type column if exists
-        print("\nStep 3: Handling insulin_type columns...")
-        if 'insulin_type' in merged_df.columns:
-            merged_df.drop(columns=['insulin_type'], inplace=True)
-            print("✓ Dropped old 'insulin_type' column")
-        else:
-            print("✓ No old insulin_type column to drop")
-        
+
+        # TODO: Overwrite the matching columns of df with the df_expansion_data_copy. the values should be block sparse per id
+
+
         # Step 4: Convert weight/height units
         print("\nStep 4: Converting weight and height units...")
-        weight_cols = [col for col in merged_df.columns if 'weight' in col.lower()]
-        height_cols = [col for col in merged_df.columns if 'height' in col.lower()]
+        weight_cols = [col for col in df.columns if 'weight' in col.lower()]
+        height_cols = [col for col in df.columns if 'height' in col.lower()]
         
         for weight_col in weight_cols:
-            if weight_col in merged_df.columns and merged_df[weight_col].mean() < 120:  # Likely kg
-                merged_df[weight_col] = merged_df[weight_col] * 2.20462
+            if weight_col in df.columns and df[weight_col].mean() < 120:  # Likely kg
+                df[weight_col] = df[weight_col] * 2.20462
                 print(f"✓ Converted {weight_col} from kg to lbs")
         
         for height_col in height_cols:
-            if height_col in merged_df.columns and merged_df[height_col].mean() > 50:  # Likely cm  
-                merged_df[height_col] = merged_df[height_col] / 30.48
+            if height_col in df.columns and df[height_col].mean() > 50:  # Likely cm
+                df[height_col] = df[height_col] / 30.48
                 print(f"✓ Converted {height_col} from cm to feet")
-        
-        # Step 5: Convert basal from IU/hr to IU
-        if 'basal' in merged_df.columns:
-            merged_df['basal'] = merged_df['basal'] / 12
-            print("✓ Converted basal from IU/hr to IU")
-        
-        # Step 6: Create user data table
-        print("\nStep 6: Creating user data table...")
-        user_data_cols = {
-            "TDD": "first", "gender": "first", "ethnicity": "first",
-            "age_of_diagnosis": "first", "source_file": "first"
-        }
-        available_user_cols = {k: v for k, v in user_data_cols.items() if k in merged_df.columns}
-        
-        if available_user_cols:
-            merged_df_user_data = merged_df.groupby("id").agg(available_user_cols).reset_index()
-        else:
-            merged_df_user_data = merged_df[['id']].drop_duplicates().reset_index(drop=True)
-        
-        print(f"✓ User data table created: {merged_df_user_data.shape}")
-        
-        # Step 7: Drop columns from main data
-        cols_to_drop = ['carbInput', 'cr', 'ice', 'isf', 'iob', 'TDD', 'gender', 'ethnicity', 'age_of_diagnosis']
-        available_cols_to_drop = [col for col in cols_to_drop if col in merged_df.columns]
-        if available_cols_to_drop:
-            merged_df.drop(columns=available_cols_to_drop, inplace=True)
-            print(f"✓ Dropped columns: {available_cols_to_drop}")
-        
-        # Step 8: Write to S3
-        print("\nStep 8: Writing data to S3...")
-        
-        # Write main processed data
-        csv_buffer = StringIO()
-        merged_df.to_csv(csv_buffer, index=False)
-        s3.put_object(Bucket=bucket_name, Key=f'processed_data_final_expanded/{file_name}', 
-                      Body=csv_buffer.getvalue())
-        print(f"✓ Uploaded main data to: s3://{bucket_name}/processed_data_final_expanded/{file_name}")
-        
-        # Write user data
-        csv_buffer = StringIO()
-        merged_df_user_data.to_csv(csv_buffer, index=False)
-        s3.put_object(Bucket=bucket_name, Key=f'user_data_final_expanded/{file_name}', 
-                      Body=csv_buffer.getvalue())
-        print(f"✓ Uploaded user data to: s3://{bucket_name}/user_data_final_expanded/{file_name}")
-        
-        print("\n✓ S3 processing pipeline completed successfully")
-        return merged_df, merged_df_user_data
-        
+
+        # TODO: Save the updated df locally
+
+        # TODO: Do a value_counts including nans with the updated df
+
     except Exception as e:
         print(f"Error in S3 processing: {e}")
         print("Skipping S3 integration - continuing with local processing only")
-        return None, None
 
 def main():
     """Main processing function"""
@@ -376,7 +300,7 @@ def main():
     
     # Step 4: Process S3 data if available
     print("\nAttempting S3 data processing...")
-    merged_df, user_data = process_s3_data(df.copy())
+    process_s3_data(df.copy())
     
     # Final summary
     print("\n" + "=" * 70)

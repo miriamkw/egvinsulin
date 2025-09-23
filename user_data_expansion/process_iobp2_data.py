@@ -29,7 +29,7 @@ def generate_iobp2_data():
     print(f"Screening shape: {screening.shape}")
     print("Unique pump types:")
     print(screening['PumpType'].value_counts().to_dict())
-    
+
     # Step 3: Filter completed participants only
     print("\nStep 3: Filtering completed participants...")
     completed_roster = roster[roster['RCTPtStatus'] == 'Completed'].copy()
@@ -46,77 +46,84 @@ def generate_iobp2_data():
     
     # id
     user_data_expansion['id'] = merged_data['PtID']
-    
-    # insulin_delivery_device - Map pump types
-    def map_insulin_delivery_device(pump_type):
-        if pd.isna(pump_type):
-            return 'Unknown'
-        
-        pump_str = str(pump_type).strip()
-        
-        if 'OmniPod' in pump_str:
-            return 'OmniPod'
-        elif 'Tandem' in pump_str:
-            if 'Control:IQ' in pump_str or 'Control-IQ' in pump_str:
-                return 't:slim X2'
-            elif 'Basal:IQ' in pump_str or 'Basal-IQ' in pump_str:
-                return 't:slim X2'
-            elif 'X2' in pump_str:
-                return 't:slim X2'
-            else:
-                return 't:slim'
-        elif 'Medtronic' in pump_str:
-            if '630G' in pump_str:
-                return 'MiniMed 630G'
-            elif '530G' in pump_str or '551' in pump_str:
-                return 'MiniMed 530G'
-            else:
-                return 'MiniMed'
-        elif 'Animas' in pump_str:
-            return 'Animas One Touch Ping'
-        else:
-            return pump_str
-    
-    user_data_expansion['insulin_delivery_device'] = merged_data['PumpType'].apply(map_insulin_delivery_device)
-    
+
     # insulin_delivery_algorithm - Map based on treatment group and device
-    def map_insulin_delivery_algorithm(trt_group, device):
-        if trt_group == 'Control':
-            return 'basal-bolus'
-        elif trt_group in ['BP', 'BPFiasp']:
+    def map_insulin_delivery_algorithm(trt_group, device, is_mdi):
+        if trt_group in ['BP', 'BPFiasp']:
             # Bionic Pancreas used automated insulin delivery
             return 'Bionic Pancreas'
         else:
             # Default based on device
-            if 'Control-IQ' in str(device):
-                return 'Control-IQ'
-            elif 'Basal-IQ' in str(device):
-                return 'Basal-IQ'
+            if 'Control:IQ' in str(device):
+                return 'Control:IQ'
+            elif 'Basal:IQ' in str(device):
+                return 'Basal:IQ'
+            elif '630G' in str(device):
+                return 'SmartGuard'
+            elif '670G' in str(device):
+                return 'SmartGuard'
+            elif '530G' in str(device):
+                return 'Low-Glucose Suspend'
+            elif 'Other' in str(device):
+                return np.nan
+            elif pd.isna(device):
+                if is_mdi == 1:
+                    return 'Multiple Daily Injections'
+                else:
+                    return np.nan
             else:
                 return 'basal-bolus'
-    
+
     user_data_expansion['insulin_delivery_algorithm'] = merged_data.apply(
-        lambda x: map_insulin_delivery_algorithm(x['TrtGroup'], x['PumpType']), axis=1
+        lambda x: map_insulin_delivery_algorithm(x['TrtGroup'], x['PumpType'], x['InsModInjections']), axis=1
     )
-    
-    # cgm_device - Map CGM devices
-    def map_cgm_device(cgm_device):
-        if pd.isna(cgm_device):
-            return 'Dexcom G6'  # Default for IOBP2 timeframe (2019-2021)
-        elif 'Dexcom' in str(cgm_device):
-            return 'Dexcom G6'  # IOBP2 used Dexcom G6 during study period
+
+    #user_data_expansion['PumpType'] = merged_data['PumpType']
+    #user_data_expansion['InsModInjections'] = merged_data['InsModInjections']
+    #user_data_expansion['InsModPump'] = merged_data['InsModPump']
+    #user_data_expansion['InsModInhaled'] = merged_data['InsModInhaled']
+    #user_data_expansion['TrtGroup'] = merged_data['TrtGroup']
+
+    # insulin_delivery_device - Map pump types
+    def map_insulin_delivery_device(trt_group, pump_type, is_mdi):
+        if trt_group in ['BP', 'BPFiasp']:
+            return 'Beta Bionics Gen 4 iLet'
+
+        if pd.isna(pump_type):
+            if is_mdi == 1:
+                return 'Insulin Pen'
+            else:
+                return np.nan
+
+        pump_str = str(pump_type).strip()
+        
+        if 'OmniPod' in pump_str:
+            return 'OmniPod'
+        elif 'Other' in pump_str:
+            return np.nan
+        elif 'Tandem' in pump_str:
+            return 't:slim X2'
+        elif 'Medtronic' in pump_str:
+            return pump_str.replace('Medtronic', 'MiniMed')
         else:
-            return str(cgm_device)
+            return pump_str
     
-    user_data_expansion['cgm_device'] = merged_data['CGMUseDevice'].apply(map_cgm_device)
+    user_data_expansion['insulin_delivery_device'] = merged_data.apply(
+        lambda x: map_insulin_delivery_device(x['TrtGroup'], x['PumpType'], x['InsModInjections']), axis=1
+    )
+
+    user_data_expansion['cgm_device'] = 'Dexcom G6'
     
     # ethnicity - Combine ethnicity and race
     def combine_ethnicity_race(row):
         ethnicity = str(row['Ethnicity']) if pd.notna(row['Ethnicity']) else ''
         race = str(row['Race']) if pd.notna(row['Race']) else ''
-        
+
         if ethnicity == 'Hispanic or Latino':
-            return 'Hispanic/Latino'
+            if race == 'Unknown/not reported':
+                return 'Hispanic/Latino'
+            else:
+                return race + ', Hispanic/Latino'
         elif race == 'White':
             return 'White'
         elif race == 'Black/African American':
@@ -125,25 +132,29 @@ def generate_iobp2_data():
             return 'Asian'
         elif race == 'More than one race':
             return 'More than one race'
+        elif race == 'Unknown/not reported':
+            return np.nan
         else:
-            return race if race else 'Unknown'
-    
+            return race if race else np.nan
+
     user_data_expansion['ethnicity'] = merged_data.apply(combine_ethnicity_race, axis=1)
     
     # age_of_diagnosis - Not available in IOBP2, set to NaN
-    user_data_expansion['age_of_diagnosis'] = np.nan
+    user_data_expansion['age_of_diagnosis'] = merged_data['DiagAge']
     
-    # is_pregnant - Not specified, default to False
+    # is_pregnant - Pregnancy is exclusion criterion
     user_data_expansion['is_pregnant'] = False
     
     # insulin_delivery_modality - Based on algorithm
     def map_insulin_delivery_modality(algorithm):
         if algorithm == 'Bionic Pancreas':
             return 'AID'  # Automated Insulin Delivery
-        elif algorithm in ['basal-bolus', 'Control-IQ', 'Basal-IQ']:
-            return 'CSII'  # Continuous Subcutaneous Insulin Infusion
+        elif algorithm in ['Multiple Daily Injections']:
+            return 'MDI'
+        elif algorithm in ['basal-bolus']:
+            return 'SAP'
         else:
-            return 'CSII'
+            return 'AID'
     
     user_data_expansion['insulin_delivery_modality'] = user_data_expansion['insulin_delivery_algorithm'].apply(map_insulin_delivery_modality)
     
@@ -155,11 +166,12 @@ def generate_iobp2_data():
     
     print("\nDistributions:")
     print(f"Treatment groups: {merged_data['TrtGroup'].value_counts().to_dict()}")
-    print(f"Insulin delivery devices: {user_data_expansion['insulin_delivery_device'].value_counts().to_dict()}")
-    print(f"Insulin delivery algorithms: {user_data_expansion['insulin_delivery_algorithm'].value_counts().to_dict()}")
-    print(f"CGM devices: {user_data_expansion['cgm_device'].value_counts().to_dict()}")
-    print(f"Ethnicity: {user_data_expansion['ethnicity'].value_counts().to_dict()}")
-    
+    print(f"Insulin delivery devices: {user_data_expansion['insulin_delivery_device'].value_counts(dropna=False).to_dict()}")
+    print(f"Insulin delivery algorithms: {user_data_expansion['insulin_delivery_algorithm'].value_counts(dropna=False).to_dict()}")
+    print(f"Insulin delivery modalities: {user_data_expansion['insulin_delivery_modality'].value_counts(dropna=False).to_dict()}")
+    print(f"CGM devices: {user_data_expansion['cgm_device'].value_counts(dropna=False).to_dict()}")
+    print(f"Ethnicity: {user_data_expansion['ethnicity'].value_counts(dropna=False).to_dict()}")
+
     return user_data_expansion
 
 def update_iobp2_data(df):
@@ -174,23 +186,7 @@ def update_iobp2_data(df):
     for col, count in null_counts.items():
         if count > 0:
             print(f"  {col}: {count} null values")
-    
-    # Fill any null values in key columns
-    algorithm_nulls = df['insulin_delivery_algorithm'].isnull().sum()
-    if algorithm_nulls > 0:
-        df['insulin_delivery_algorithm'] = df['insulin_delivery_algorithm'].fillna('basal-bolus')
-        print(f"✓ Filled {algorithm_nulls} null values in insulin_delivery_algorithm with 'basal-bolus'")
-    
-    modality_nulls = df['insulin_delivery_modality'].isnull().sum()
-    if modality_nulls > 0:
-        df['insulin_delivery_modality'] = df['insulin_delivery_modality'].fillna('CSII')
-        print(f"✓ Filled {modality_nulls} null values in insulin_delivery_modality with 'CSII'")
-    
-    device_nulls = df['insulin_delivery_device'].isnull().sum()
-    if device_nulls > 0:
-        df['insulin_delivery_device'] = df['insulin_delivery_device'].fillna('Unknown')
-        print(f"✓ Filled {device_nulls} null values in insulin_delivery_device with 'Unknown'")
-    
+
     print(f"\nStandardization complete for {len(df)} participants")
     return df
 

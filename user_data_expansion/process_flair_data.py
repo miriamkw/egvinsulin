@@ -49,24 +49,21 @@ def generate_flair_data():
     print("\nStep 4: Creating base dataframe...")
     final_df = roster_df[['PtID', 'SiteID', 'EnrollDt', 'RandDt', 'PtStatus', 'TrtGroup', 'AgeAsofEnrollDt']].copy()
     final_df = final_df.merge(patient_delivery_df, on='PtID', how='left')
-    final_df['insulin_delivery_device'] = final_df['insulin_delivery_device'].fillna('Unknown')
+
+    # FLAIR used MiniMed 670G system
+    final_df['insulin_delivery_device'] = 'MiniMed 670G'
     
     # Step 5: Update device specifics for FLAIR (MiniMed 670G system)
     print("\nStep 5: Updating device specifics...")
-    # FLAIR used MiniMed 670G system
-    final_df['insulin_delivery_device'] = final_df['insulin_delivery_device'].replace('Pump', 'MiniMed 670G')
-    
+
     # Map treatment groups to algorithms
     final_df['insulin_delivery_algorithm'] = final_df['TrtGroup'].map({
-        '670G': 'basal-bolus',  # Standard pump therapy
-        'AHCL': 'SmartGuard'    # Advanced Hybrid Closed Loop (SmartGuard algorithm)
+        '670G': 'SmartGuard',  # SmartGuard HCL
+        'AHCL': '780G Advanced HCL'    # Advanced Hybrid Closed Loop
     })
     
-    # Map treatment groups to modalities  
-    final_df['insulin_delivery_modality'] = final_df['TrtGroup'].map({
-        '670G': 'SAP',  # Sensor Augmented Pump
-        'AHCL': 'AID'   # Automated Insulin Delivery
-    })
+    # Map treatment groups to modalities, all used AID in this study
+    final_df['insulin_delivery_modality'] = 'AID'
     
     print(f"Treatment groups: {final_df['TrtGroup'].value_counts().to_dict()}")
     print(f"Algorithms: {final_df['insulin_delivery_algorithm'].value_counts().to_dict()}")
@@ -74,26 +71,9 @@ def generate_flair_data():
     
     # Step 6: Add CGM device (Guardian 3 for MiniMed 670G system)
     print("\nStep 6: Adding CGM device information...")
-    try:
-        cgm_file = os.path.join(flair_data_path, "FLAIRDeviceCGM.txt")
-        cgm_df = pd.read_csv(cgm_file, delimiter="|")
-        cgm_ptids = set(cgm_df['PtID'].unique())
-        
-        def assign_cgm_device(ptid):
-            if ptid in cgm_ptids:
-                return "Guardian 3"  # FLAIR used Guardian 3 with MiniMed 670G
-            else:
-                return np.nan
-        
-        final_df['cgm_device'] = final_df['PtID'].apply(assign_cgm_device)
-        
-        print(f"CGM coverage: {len(cgm_ptids)} out of {len(final_df)} participants")
-        print(f"CGM device distribution: {final_df['cgm_device'].value_counts(dropna=False).to_dict()}")
-        
-    except Exception as e:
-        print(f"Error reading CGM data: {e}")
-        final_df['cgm_device'] = "Guardian 3"  # Default for FLAIR
-    
+    final_df['cgm_device'] = "Guardian 3"  # FLAIR used Guardian 3 with MiniMed 670G
+    print(f"CGM device distribution: {final_df['cgm_device'].value_counts(dropna=False).to_dict()}")
+
     # Step 7: Add ethnicity
     print("\nStep 7: Adding ethnicity information...")
     try:
@@ -268,21 +248,7 @@ def update_flair_data(df):
     device_dist = df['insulin_delivery_device'].value_counts(dropna=False)
     for value, count in device_dist.items():
         print(f"  {value}: {count}")
-    
-    # 1. Fill null values in insulin_delivery_algorithm with "basal-bolus"
-    print("\n1. Filling null values in insulin_delivery_algorithm...")
-    algorithm_nulls = df['insulin_delivery_algorithm'].isnull().sum()
-    print(f"   Found {algorithm_nulls} null values")
-    df['insulin_delivery_algorithm'] = df['insulin_delivery_algorithm'].fillna('basal-bolus')
-    print(f"   ✓ Filled with 'basal-bolus'")
-    
-    # 2. Fill null values in insulin_delivery_modality with "SAP"
-    print("\n2. Filling null values in insulin_delivery_modality...")
-    modality_nulls = df['insulin_delivery_modality'].isnull().sum()
-    print(f"   Found {modality_nulls} null values")
-    df['insulin_delivery_modality'] = df['insulin_delivery_modality'].fillna('SAP')
-    print(f"   ✓ Filled with 'SAP'")
-    
+
     # 3. Fill null values in insulin_delivery_device with "MiniMed 670G"
     print("\n3. Filling null values in insulin_delivery_device...")
     device_nulls = df['insulin_delivery_device'].isnull().sum()
@@ -344,8 +310,6 @@ def update_flair_data(df):
         print(f"     {value}: {count}")
     
     print(f"\nSTANDARDIZATION SUMMARY:")
-    print(f"✓ Updated {algorithm_nulls} records: insulin_delivery_algorithm null → 'basal-bolus'")
-    print(f"✓ Updated {modality_nulls} records: insulin_delivery_modality null → 'SAP'")
     if device_nulls > 0:
         print(f"✓ Updated {device_nulls} records: insulin_delivery_device null → 'MiniMed 670G'")
     print(f"✓ Final shape: {df.shape}")
