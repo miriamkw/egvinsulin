@@ -6,6 +6,53 @@ Process DCLP5 data: Generate user data expansion and apply standardizations
 import pandas as pd
 import numpy as np
 import os
+from helpers import parse_dates_mixed_format
+
+def get_patient_start_dates(dclp5_data_path):
+    """
+    Extract the earliest date for each patient from Pump_BolusDelivered.txt
+    
+    Args:
+        dclp5_data_path: Path to DCLP5 data directory
+    
+    Returns:
+        DataFrame with PtID and start_date columns
+    """
+    try:
+        bolus_file = os.path.join(dclp5_data_path, "DCLP5TandemBolus_Completed_Combined_b.txt")
+        print(f"Reading bolus delivery data from: {bolus_file}")
+        
+        # Read the bolus delivery data
+        bolus_df = pd.read_csv(bolus_file, delimiter="|")
+        print(f"Bolus data shape: {bolus_df.shape}")
+        print(f"Bolus data columns: {bolus_df.columns.tolist()}")
+        
+        date_column = 'DataDtTm'
+        print(f"Using date column: {date_column}")
+        
+        # Parse dates
+        bolus_df = parse_dates_mixed_format(bolus_df, date_column, 'parsed_date')
+        
+        # Filter out rows with invalid dates
+        valid_dates_df = bolus_df[bolus_df['parsed_date'].notna()].copy()
+        print(f"Valid date records: {len(valid_dates_df)} out of {len(bolus_df)}")
+        
+        if valid_dates_df.empty:
+            print("Warning: No valid dates found in Pump_BolusDelivered.txt")
+            return pd.DataFrame(columns=['PtID', 'start_date'])
+        
+        # Find earliest date for each patient
+        earliest_dates = valid_dates_df.groupby('PtID')['parsed_date'].min().reset_index()
+        earliest_dates.columns = ['PtID', 'start_date']
+        
+        print(f"Extracted start dates for {len(earliest_dates)} patients")
+        print(f"Date range: {earliest_dates['start_date'].min()} to {earliest_dates['start_date'].max()}")
+        
+        return earliest_dates
+        
+    except Exception as e:
+        print(f"Error reading Pump_BolusDelivered.txt: {e}")
+        return pd.DataFrame(columns=['PtID', 'start_date'])
 
 def generate_dclp5_data():
     """Generate DCLP5 user data expansion following DCLP3 pattern"""
@@ -29,32 +76,16 @@ def generate_dclp5_data():
     insulin_df = pd.read_csv(insulin_file, delimiter="|")
     print(f"Insulin data shape: {insulin_df.shape}")
     print(f"Unique delivery routes: {insulin_df['InsRoute'].value_counts().to_dict()}")
-    
-    # Step 3: Determine primary delivery device
-    print("\nStep 3: Determining primary insulin delivery device...")
-    def get_primary_insulin_delivery(patient_data):
-        if 'Pump' in patient_data['InsRoute'].values:
-            return 'Pump'
-        else:
-            return 'Injection'
-    
-    patient_delivery = insulin_df.groupby('PtID').apply(get_primary_insulin_delivery)
-    patient_delivery_df = patient_delivery.reset_index()
-    patient_delivery_df.columns = ['PtID', 'insulin_delivery_device']
-    
-    print(f"Delivery device distribution: {patient_delivery_df['insulin_delivery_device'].value_counts().to_dict()}")
-    
+
     # Step 4: Create base dataframe
     print("\nStep 4: Creating base dataframe...")
     final_df = roster_df[['PtID', 'EnrollDt', 'RandDt', 'trtGroup', 'PtStatus', 'SiteID']].copy()
-    final_df = final_df.merge(patient_delivery_df, on='PtID', how='left')
-    final_df['insulin_delivery_device'] = final_df['insulin_delivery_device'].fillna('Unknown')
-    
+
     # Step 5: Update device specifics
     print("\nStep 5: Updating device specifics...")
-    final_df['insulin_delivery_device'] = final_df['insulin_delivery_device'].replace('Pump', 't:slim X2')
+    final_df['insulin_delivery_device'] = 't:slim X2'  # Known from the protocol
     final_df['insulin_delivery_algorithm'] = final_df['trtGroup'].map({
-        'SAP': 'basal-bolus',
+        'SC': 'Basal-IQ',
         'CLC': 'Control-IQ'
     })
     
@@ -63,32 +94,9 @@ def generate_dclp5_data():
     
     # Step 6: Add CGM device
     print("\nStep 6: Adding CGM device information...")
-    try:
-        dexcom_clarity_file = os.path.join(dclp5_data_path, "DexcomClarityCGM.txt")
-        dexcom_clarity_df = pd.read_csv(dexcom_clarity_file, delimiter="|")
-        dexcom_ptids = set(dexcom_clarity_df['PtID'].unique())
-        
-        other_cgm_file = os.path.join(dclp5_data_path, "OtherCGM.txt")  
-        other_cgm_df = pd.read_csv(other_cgm_file, delimiter="|")
-        other_cgm_ptids = set(other_cgm_df['PtID'].unique())
-        
-        all_cgm_ptids = dexcom_ptids.union(other_cgm_ptids)
-        
-        def assign_cgm_device(ptid):
-            if ptid in all_cgm_ptids:
-                return "Dexcom G6"  # DCLP5 used G6 (2019-2021 era)
-            else:
-                return np.nan
-        
-        final_df['cgm_device'] = final_df['PtID'].apply(assign_cgm_device)
-        
-        print(f"CGM coverage: {len(all_cgm_ptids)} out of {len(final_df)} participants")
-        print(f"CGM device distribution: {final_df['cgm_device'].value_counts(dropna=False).to_dict()}")
-        
-    except Exception as e:
-        print(f"Error reading CGM data: {e}")
-        final_df['cgm_device'] = "Dexcom G6"  # Default for DCLP5 era
-    
+    final_df['cgm_device'] = "Dexcom G6"  # DCLP5 used G6, stated in the protocol
+    print(f"CGM device distribution: {final_df['cgm_device'].value_counts(dropna=False).to_dict()}")
+
     # Step 7: Add ethnicity
     print("\nStep 7: Adding ethnicity information...")
     try:
@@ -132,7 +140,27 @@ def generate_dclp5_data():
     except Exception as e:
         print(f"Error reading ethnicity data: {e}")
         final_df['ethnicity'] = np.nan
-    
+
+    """
+    # Step 7.5: Add start_date from pump bolus data
+    print("\nStep 7.5: Adding start_date from pump bolus delivery data...")
+    try:
+        start_dates_df = get_patient_start_dates(dclp5_data_path)
+        if not start_dates_df.empty:
+            final_df = final_df.merge(start_dates_df, on='PtID', how='left')
+            
+            # Convert to date format (remove time component if present)
+            final_df['start_date'] = pd.to_datetime(final_df['start_date']).dt.date
+            
+            print(f"Start dates added for {final_df['start_date'].notna().sum()} patients")
+        else:
+            final_df['start_date'] = np.nan
+            print("No start dates could be extracted")
+    except Exception as e:
+        print(f"Error adding start dates: {e}")
+        final_df['start_date'] = np.nan
+    """
+
     # Step 8: Add age of diagnosis
     print("\nStep 8: Adding age of diagnosis...")
     try:
@@ -153,7 +181,7 @@ def generate_dclp5_data():
     # Step 10: Add delivery modality  
     print("\nStep 10: Adding delivery modality...")
     final_df['insulin_delivery_modality'] = final_df['trtGroup'].map({
-        'SAP': 'SAP',
+        'SC': 'SAP',
         'CLC': 'AID'
     })
     
@@ -243,21 +271,7 @@ def update_dclp5_data(df):
     for col, count in null_counts.items():
         if count > 0:
             print(f"  {col}: {count} null values")
-    
-    # 1. Fill null values in insulin_delivery_algorithm with "basal-bolus"
-    print("\n1. Filling null values in insulin_delivery_algorithm...")
-    algorithm_nulls = df['insulin_delivery_algorithm'].isnull().sum()
-    print(f"   Found {algorithm_nulls} null values")
-    df['insulin_delivery_algorithm'] = df['insulin_delivery_algorithm'].fillna('basal-bolus')
-    print(f"   ✓ Filled with 'basal-bolus'")
-    
-    # 2. Fill null values in insulin_delivery_modality with "SAP"
-    print("\n2. Filling null values in insulin_delivery_modality...")
-    modality_nulls = df['insulin_delivery_modality'].isnull().sum()
-    print(f"   Found {modality_nulls} null values")
-    df['insulin_delivery_modality'] = df['insulin_delivery_modality'].fillna('SAP')
-    print(f"   ✓ Filled with 'SAP'")
-    
+
     # 3. Standardize ethnicity categories
     print("\n3. Standardizing ethnicity categories...")
     print("   Current ethnicity distribution:")
@@ -310,8 +324,6 @@ def update_dclp5_data(df):
         print(f"     {value}: {count}")
     
     print(f"\nSTANDARDIZATION SUMMARY:")
-    print(f"✓ Updated {algorithm_nulls} records: insulin_delivery_algorithm null → 'basal-bolus'")
-    print(f"✓ Updated {modality_nulls} records: insulin_delivery_modality null → 'SAP'")
     print(f"✓ Standardized {len(ethnicity_mappings)} ethnicity categories")
     print(f"✓ Final shape: {df.shape}")
     
