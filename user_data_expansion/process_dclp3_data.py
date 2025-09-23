@@ -8,6 +8,7 @@ import numpy as np
 import os
 import boto3
 from io import StringIO
+from helpers import prioritize_insulin_choice
 
 def generate_dclp3_data():
     """Generate DCLP3 user data expansion"""
@@ -151,27 +152,76 @@ def generate_dclp3_data():
     ]
     
     def get_pump_insulin_types_for_patient(ptid, insulin_data):
-        # Filter to only pump insulin records
-        patient_pump_insulin = insulin_data[(insulin_data['PtID'] == ptid) & (insulin_data['InsRoute'] == 'Pump')]
-        
-        bolus_insulins_found = []
-        basal_insulins_found = []
-        
-        for _, row in patient_pump_insulin.iterrows():
-            insulin_name = row['ParentInsulinListID']
-            if pd.notna(insulin_name):
-                if insulin_name in bolus_insulins:
-                    bolus_insulins_found.append(insulin_name)
-                elif insulin_name in basal_insulins:
-                    basal_insulins_found.append(insulin_name)
-        
-        bolus_unique = list(set(bolus_insulins_found))
-        basal_unique = list(set(basal_insulins_found))
-        
-        bolus_result = '; '.join(bolus_unique) if bolus_unique else np.nan
-        basal_result = '; '.join(basal_unique) if basal_unique else np.nan
-        
-        return bolus_result, basal_result
+        """
+        Improved insulin type detection for pump patients.
+        Determines whether patient used Aspart or Lispro and sets same for both bolus and basal.
+        """
+        try:
+            # Filter to only pump insulin records for this patient
+            patient_pump_insulin = insulin_data[
+                (insulin_data['PtID'] == ptid) & 
+                (insulin_data['InsRoute'] == 'Pump')
+            ].copy()
+            
+            if patient_pump_insulin.empty:
+                print(f"No pump insulin data found for patient {ptid}")
+                return np.nan, np.nan
+
+            # Search for Aspart and Lispro specifically
+            aspart_rows = patient_pump_insulin[
+                patient_pump_insulin['ParentInsulinListID'].str.contains(
+                    'Aspart', case=False, na=False
+                )
+            ]
+            lispro_rows = patient_pump_insulin[
+                patient_pump_insulin['ParentInsulinListID'].str.contains(
+                    'Lispro|Humalog', case=False, na=False  
+                )
+            ]
+            
+            has_aspart = not aspart_rows.empty
+            has_lispro = not lispro_rows.empty
+            
+            # Log available options
+            available_options = []
+            if has_aspart:
+                available_options.append("Aspart")
+            if has_lispro:
+                available_options.append("Lispro")
+            
+            if len(available_options) > 1:
+                print(f"Patient {ptid}: Has multiple insulin options: {', '.join(available_options)}")
+            
+            # Determine which insulin to use
+            if len(available_options) > 1:
+                # Multiple available - use prioritization logic
+                insulin_data_dict = {}
+                if has_aspart:
+                    insulin_data_dict['Novolog (Aspart)'] = aspart_rows
+                if has_lispro:
+                    insulin_data_dict['Humalog (Lispro)'] = lispro_rows
+                
+                chosen_insulin = prioritize_insulin_choice(ptid, insulin_data_dict)
+            elif has_aspart:
+                # Only Aspart available
+                chosen_insulin = 'Novolog (Aspart)'
+                print(f"Patient {ptid}: Only Aspart available, using Novolog (Aspart)")
+            elif has_lispro:
+                # Only Lispro available  
+                chosen_insulin = 'Humalog (Lispro)'
+                print(f"Patient {ptid}: Only Lispro available, using Humalog (Lispro)")
+            else:
+                print(f"Warning: No Aspart or Lispro insulin found for pump patient {ptid}")
+                return np.nan, np.nan
+            
+            print(f"Patient {ptid}: Assigned insulin type '{chosen_insulin}' for both bolus and basal")
+            
+            # Return the same insulin for both bolus and basal (pump patients use same insulin)
+            return chosen_insulin, chosen_insulin
+            
+        except Exception as e:
+            print(f"Error processing insulin data for patient {ptid}: {e}")
+            return np.nan, np.nan
     
     pump_insulin_results = []
     for ptid in final_df['PtID']:
