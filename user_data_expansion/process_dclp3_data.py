@@ -8,7 +8,7 @@ import numpy as np
 import os
 import boto3
 from io import StringIO
-from helpers import prioritize_insulin_choice
+from helpers import prioritize_insulin_choice, get_pump_insulin_types_for_patient, process_s3_data
 
 def generate_dclp3_data():
     """Generate DCLP3 user data expansion"""
@@ -151,77 +151,6 @@ def generate_dclp3_data():
         'Basaglar (Glargine, U100)', 'Levemir (Detemir) 1 time per day'
     ]
     
-    def get_pump_insulin_types_for_patient(ptid, insulin_data):
-        """
-        Improved insulin type detection for pump patients.
-        Determines whether patient used Aspart or Lispro and sets same for both bolus and basal.
-        """
-        try:
-            # Filter to only pump insulin records for this patient
-            patient_pump_insulin = insulin_data[
-                (insulin_data['PtID'] == ptid) & 
-                (insulin_data['InsRoute'] == 'Pump')
-            ].copy()
-            
-            if patient_pump_insulin.empty:
-                print(f"No pump insulin data found for patient {ptid}")
-                return np.nan, np.nan
-
-            # Search for Aspart and Lispro specifically
-            aspart_rows = patient_pump_insulin[
-                patient_pump_insulin['ParentInsulinListID'].str.contains(
-                    'Aspart', case=False, na=False
-                )
-            ]
-            lispro_rows = patient_pump_insulin[
-                patient_pump_insulin['ParentInsulinListID'].str.contains(
-                    'Lispro|Humalog', case=False, na=False  
-                )
-            ]
-            
-            has_aspart = not aspart_rows.empty
-            has_lispro = not lispro_rows.empty
-            
-            # Log available options
-            available_options = []
-            if has_aspart:
-                available_options.append("Aspart")
-            if has_lispro:
-                available_options.append("Lispro")
-            
-            if len(available_options) > 1:
-                print(f"Patient {ptid}: Has multiple insulin options: {', '.join(available_options)}")
-            
-            # Determine which insulin to use
-            if len(available_options) > 1:
-                # Multiple available - use prioritization logic
-                insulin_data_dict = {}
-                if has_aspart:
-                    insulin_data_dict['Novolog (Aspart)'] = aspart_rows
-                if has_lispro:
-                    insulin_data_dict['Humalog (Lispro)'] = lispro_rows
-                
-                chosen_insulin = prioritize_insulin_choice(ptid, insulin_data_dict)
-            elif has_aspart:
-                # Only Aspart available
-                chosen_insulin = 'Novolog (Aspart)'
-                print(f"Patient {ptid}: Only Aspart available, using Novolog (Aspart)")
-            elif has_lispro:
-                # Only Lispro available  
-                chosen_insulin = 'Humalog (Lispro)'
-                print(f"Patient {ptid}: Only Lispro available, using Humalog (Lispro)")
-            else:
-                print(f"Warning: No Aspart or Lispro insulin found for pump patient {ptid}")
-                return np.nan, np.nan
-            
-            print(f"Patient {ptid}: Assigned insulin type '{chosen_insulin}' for both bolus and basal")
-            
-            # Return the same insulin for both bolus and basal (pump patients use same insulin)
-            return chosen_insulin, chosen_insulin
-            
-        except Exception as e:
-            print(f"Error processing insulin data for patient {ptid}: {e}")
-            return np.nan, np.nan
     
     pump_insulin_results = []
     for ptid in final_df['PtID']:
@@ -287,114 +216,6 @@ def update_dclp3_data(df):
     return df
 
 
-def process_s3_data(df_expansion_data_copy):
-    """Process DCLP3 data with S3 integration"""
-    print("\n" + "=" * 50)
-    print("S3 DATA PROCESSING PIPELINE")
-    print("=" * 50)
-    
-    bucket_name = 'replica-general-data-repository'
-    file_name = 'DCLP3.csv'
-    
-    try:
-        # Step 1: Load from S3
-        print("Step 1: Loading data from S3...")
-        obj_key = f'processed_data_final_expanded/{file_name}'
-        s3 = boto3.client("s3")
-        obj_response = s3.get_object(Bucket=bucket_name, Key=obj_key)
-        content = obj_response["Body"].read().decode("utf-8")
-        df = pd.read_csv(StringIO(content))
-        print(f"✓ Successfully loaded S3 data: {df.shape}")
-
-        # Step 2: Overwrite matching columns with expansion data (block sparse per id)
-        print("\nStep 2: Merging expansion data with S3 data...")
-        matching_columns = [col for col in df_expansion_data_copy.columns if col in df.columns]
-        print(f"Found {len(matching_columns)} matching columns: {matching_columns}")
-        
-        # Create a mapping of id to expansion data for efficient lookup
-        expansion_dict = df_expansion_data_copy.set_index('id').to_dict('index')
-        
-        # Update matching columns for each id that exists in both datasets
-        updated_count = 0
-        for idx, row in df.iterrows():
-            patient_id = row['id']
-            if patient_id in expansion_dict:
-                expansion_row = expansion_dict[patient_id]
-                for col in matching_columns:
-                    if col != 'id' and col in expansion_row:
-                        # Only update if expansion data has a non-null value
-                        expansion_value = expansion_row[col]
-                        if pd.notna(expansion_value):
-                            df.at[idx, col] = expansion_value
-                updated_count += 1
-        
-        print(f"✓ Updated {updated_count} patient records with expansion data")
-
-
-        # Step 4: Convert weight/height units
-        print("\nStep 4: Converting weight and height units...")
-        weight_cols = [col for col in df.columns if 'weight' in col.lower()]
-        height_cols = [col for col in df.columns if 'height' in col.lower()]
-        
-        for weight_col in weight_cols:
-            if weight_col in df.columns and df[weight_col].mean() < 120:  # Likely kg
-                df[weight_col] = df[weight_col] * 2.20462
-                print(f"✓ Converted {weight_col} from kg to lbs")
-        
-        for height_col in height_cols:
-            if height_col in df.columns and df[height_col].mean() > 50:  # Likely cm
-                df[height_col] = df[height_col] / 30.48
-                print(f"✓ Converted {height_col} from cm to feet")
-
-        # Step 5: Save the updated df locally
-        print("\nStep 5: Saving updated dataframe locally...")
-        output_file = "DCLP3_s3_merged.csv"
-        df.to_csv(output_file, index=False)
-        print(f"✓ Saved merged S3 dataframe to: {output_file}")
-        print(f"  Final merged dataset shape: {df.shape}")
-
-        # Step 6: Analyze updated dataframe with value counts (including NaNs)
-        print("\nStep 6: Analyzing merged dataframe...")
-        print("Value counts for key categorical columns (including NaNs):")
-        
-        categorical_columns = [
-            'insulin_delivery_device', 'insulin_delivery_algorithm', 'cgm_device',
-            'ethnicity', 'insulin_delivery_modality', 'insulin_type_bolus', 'insulin_type_basal'
-        ]
-        
-        for col in categorical_columns:
-            if col in df.columns:
-                print(f"\n{col}:")
-                counts = df[col].value_counts(dropna=False)
-                for value, count in counts.items():
-                    print(f"  {value}: {count}")
-        
-        # Summary statistics for numerical columns
-        numerical_columns = ['age_of_diagnosis']
-        for col in numerical_columns:
-            if col in df.columns:
-                print(f"\n{col} statistics:")
-                print(f"  Count (non-null): {df[col].count()}")
-                print(f"  Count (null): {df[col].isna().sum()}")
-                if df[col].count() > 0:
-                    print(f"  Mean: {df[col].mean():.2f}")
-                    print(f"  Min: {df[col].min():.2f}")
-                    print(f"  Max: {df[col].max():.2f}")
-        
-        print(f"\nOverall dataset summary:")
-        print(f"  Total rows: {len(df)}")
-        print(f"  Total columns: {len(df.columns)}")
-        print(f"  Missing values per column:")
-        missing_counts = df.isna().sum()
-        for col, missing_count in missing_counts.items():
-            if missing_count > 0:
-                print(f"    {col}: {missing_count}")
-        
-        return df
-
-    except Exception as e:
-        print(f"Error in S3 processing: {e}")
-        print("Skipping S3 integration - continuing with local processing only")
 
 def main():
     """Main processing function"""
@@ -415,7 +236,11 @@ def main():
     
     # Step 4: Process S3 data if available
     print("\nAttempting S3 data processing...")
-    process_s3_data(df.copy())
+    s3_df = process_s3_data(df.copy(), 'DCLP3')
+    if s3_df is not None:
+        print("✓ S3 processing completed successfully")
+    else:
+        print("⚠ S3 processing failed, continuing with local data only")
     
     # Final summary
     print("\n" + "=" * 70)

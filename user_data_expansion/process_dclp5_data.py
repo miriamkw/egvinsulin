@@ -6,7 +6,7 @@ Process DCLP5 data: Generate user data expansion and apply standardizations
 import pandas as pd
 import numpy as np
 import os
-from helpers import parse_dates_mixed_format, get_pump_insulin_types_for_patient
+from helpers import parse_dates_mixed_format, get_pump_insulin_types_for_patient, process_s3_data
 
 def get_patient_start_dates(dclp5_data_path):
     """
@@ -314,6 +314,14 @@ def main():
     df.to_csv(output_file, index=False)
     
     print(f"✓ Saved DCLP5 dataframe to: {output_file}")
+    
+    # Step 4: Process S3 data if available
+    print("\nAttempting S3 data processing...")
+    s3_df = process_s3_data(df.copy(), 'DCLP5')
+    if s3_df is not None:
+        print("✓ S3 processing completed successfully")
+    else:
+        print("⚠ S3 processing failed, continuing with local data only")
     
     # Final summary
     print("\n" + "=" * 70)
