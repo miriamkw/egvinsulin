@@ -6,7 +6,7 @@ Process DCLP5 data: Generate user data expansion and apply standardizations
 import pandas as pd
 import numpy as np
 import os
-from helpers import parse_dates_mixed_format
+from helpers import parse_dates_mixed_format, get_pump_insulin_types_for_patient
 
 def get_patient_start_dates(dclp5_data_path):
     """
@@ -185,40 +185,8 @@ def generate_dclp5_data():
         'CLC': 'AID'
     })
     
-    # Step 11: Add insulin types (pump-only)
+    # Step 11: Add insulin types (pump-only) using improved helper function
     print("\nStep 11: Adding insulin types...")
-    bolus_insulins = [
-        'Novolog (Aspart)', 'Humalog (Lispro)', 'Novolog Fiasp',
-        'Regular (R) (Humulin R or Novolin R)', 'Admelog'
-    ]
-    
-    basal_insulins = [
-        'Lantus (Glargine) 2 times per day', 'Lantus (Glargine) 1 time per day', 
-        'Degludec (Tresiba)', 'Toujeo (Glargine, U300)', 
-        'Basaglar (Glargine, U100)', 'Levemir (Detemir) 1 time per day'
-    ]
-    
-    def get_pump_insulin_types_for_patient(ptid, insulin_data):
-        patient_pump_insulin = insulin_data[(insulin_data['PtID'] == ptid) & (insulin_data['InsRoute'] == 'Pump')]
-        
-        bolus_insulins_found = []
-        basal_insulins_found = []
-        
-        for _, row in patient_pump_insulin.iterrows():
-            insulin_name = row['ParentInsulinListID']
-            if pd.notna(insulin_name):
-                if insulin_name in bolus_insulins:
-                    bolus_insulins_found.append(insulin_name)
-                elif insulin_name in basal_insulins:
-                    basal_insulins_found.append(insulin_name)
-        
-        bolus_unique = list(set(bolus_insulins_found))
-        basal_unique = list(set(basal_insulins_found))
-        
-        bolus_result = '; '.join(bolus_unique) if bolus_unique else np.nan
-        basal_result = '; '.join(basal_unique) if basal_unique else np.nan
-        
-        return bolus_result, basal_result
     
     pump_insulin_results = []
     for ptid in final_df['PtID']:
