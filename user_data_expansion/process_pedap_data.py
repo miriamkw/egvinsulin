@@ -6,6 +6,7 @@ Process PEDAP data: Generate user data expansion and apply standardizations
 import pandas as pd
 import numpy as np
 import os
+from helpers import prioritize_insulin_choice, process_s3_data
 
 def generate_pedap_data():
     """Generate PEDAP user data expansion"""
@@ -23,14 +24,10 @@ def generate_pedap_data():
     print("Treatment groups:")
     print(roster['TrtGroup'].value_counts().to_dict())
     
-    # Step 2: Load screening data for device and demographic information
+    # Step 2: Load screening data for demographic information
     print("\nStep 2: Reading screening data...")
     screening = pd.read_csv(os.path.join(base_path, 'PEDAPDiabScreening.txt'), delimiter='|')
     print(f"Screening shape: {screening.shape}")
-    print("Unique pump types:")
-    print(screening['PumpType'].value_counts().to_dict())
-    print("CGM devices:")
-    print(screening['CGMUseDevice'].value_counts().to_dict())
     
     # Step 3: Filter completed participants only
     print("\nStep 3: Filtering completed participants...")
@@ -49,9 +46,11 @@ def generate_pedap_data():
     # id
     user_data_expansion['id'] = merged_data['PtID']
     
+    # All PEDAP participants use the same setup (pediatric AID study)
     user_data_expansion['insulin_delivery_device'] = 't:slim X2'
     user_data_expansion['insulin_delivery_algorithm'] = 'Control-IQ'
     user_data_expansion['cgm_device'] = 'Dexcom G6'
+    user_data_expansion['insulin_delivery_modality'] = 'AID'
     
     # ethnicity - Combine ethnicity and race like DCLP3
     def combine_ethnicity_race(row):
@@ -85,8 +84,6 @@ def generate_pedap_data():
     
     # is_pregnant - Always False for pediatric population (ages 2-5)
     user_data_expansion['is_pregnant'] = False
-            
-    user_data_expansion['insulin_delivery_modality'] = 'AID'
     
     # Step 6: Load insulin data for insulin types
     print("\nStep 6: Processing insulin types...")
@@ -95,146 +92,91 @@ def generate_pedap_data():
     print("Insulin type start distribution:")
     print(insulin_data['InsTypeStart'].value_counts().to_dict())
     
-    def get_insulin_type(pt_id, trt_group, insulin_df, insulin_category='bolus'):
-        patient_insulins = insulin_df[insulin_df['PtID'] == pt_id].copy()
-        
-        if patient_insulins.empty:
-            return np.nan
-        
-        # Priority 1: Started after enrollment (for any treatment group)
-        started_after = patient_insulins[patient_insulins['InsTypeStart'] == 'Started after enrollment']
-        
-        if not started_after.empty:
-            # Filter for bolus vs basal insulins
-            if insulin_category == 'bolus':
-                # Fast-acting insulins (bolus)
-                bolus_insulins = started_after[started_after['InsulinName'].str.contains(
-                    'Humalog|Novolog|Fiasp|Apidra|Lispro|Aspart', case=False, na=False)]
-                if not bolus_insulins.empty:
-                    return bolus_insulins.iloc[0]['InsulinName']
-            else:  # basal
-                # Long-acting insulins (basal) or pump (same as bolus)
-                basal_insulins = started_after[started_after['InsulinName'].str.contains(
-                    'Lantus|Levemir|Tresiba|Glargine|Detemir|Degludec', case=False, na=False)]
-                if not basal_insulins.empty:
-                    return basal_insulins.iloc[0]['InsulinName']
-                # For pumps, basal = bolus insulin
-                elif started_after[started_after['InsRoute'] == 'Pump'].shape[0] > 0:
-                    pump_insulin = started_after[started_after['InsRoute'] == 'Pump'].iloc[0]['InsulinName']
-                    return pump_insulin
-        
-        # Priority 2: In use at time of enrollment (for ANY treatment group)
-        in_use = patient_insulins[patient_insulins['InsTypeStart'] == 'In use at time of enrollment']
-        
-        if not in_use.empty:
-            if insulin_category == 'bolus':
-                bolus_insulins = in_use[in_use['InsulinName'].str.contains(
-                    'Humalog|Novolog|Fiasp|Apidra|Lispro|Aspart', case=False, na=False)]
-                if not bolus_insulins.empty:
-                    return bolus_insulins.iloc[0]['InsulinName']
-            else:  # basal
-                basal_insulins = in_use[in_use['InsulinName'].str.contains(
-                    'Lantus|Levemir|Tresiba|Glargine|Detemir|Degludec', case=False, na=False)]
-                if not basal_insulins.empty:
-                    return basal_insulins.iloc[0]['InsulinName']
-                # For pumps, basal = bolus insulin
-                elif in_use[in_use['InsRoute'] == 'Pump'].shape[0] > 0:
-                    pump_insulin = in_use[in_use['InsRoute'] == 'Pump'].iloc[0]['InsulinName']
-                    return pump_insulin
-        
-        return np.nan
+    def get_pedap_insulin_types_for_patient(ptid, insulin_data):
+        """
+        PEDAP-specific insulin type detection that handles both pump and MDI users.
+        Uses improved prioritization logic while respecting PEDAP's enrollment timing priorities.
+        """
+        try:
+            # Get all insulin records for this patient
+            patient_insulin = insulin_data[insulin_data['PtID'] == ptid].copy()
+            
+            if patient_insulin.empty:
+                print(f"No insulin data found for patient {ptid}")
+                return np.nan, np.nan
+
+            # Search for Aspart and Lispro in all records (PEDAP's main fast-acting insulins)
+            aspart_rows = patient_insulin[
+                patient_insulin['InsulinName'].str.contains(
+                    'Aspart|Novolog', case=False, na=False
+                )
+            ]
+            lispro_rows = patient_insulin[
+                patient_insulin['InsulinName'].str.contains(
+                    'Lispro|Humalog', case=False, na=False  
+                )
+            ]
+            
+            has_aspart = not aspart_rows.empty
+            has_lispro = not lispro_rows.empty
+            
+            # Log available options
+            available_options = []
+            if has_aspart:
+                available_options.append("Aspart/Novolog")
+            if has_lispro:
+                available_options.append("Lispro/Humalog")
+            
+            if len(available_options) > 1:
+                print(f"Patient {ptid}: Has multiple insulin options: {', '.join(available_options)}")
+            
+            chosen_insulin = None
+            
+            # Determine which insulin to use with PEDAP-specific prioritization
+            if len(available_options) > 1:
+                # Multiple available - use prioritization logic
+                insulin_data_dict = {}
+                if has_aspart:
+                    insulin_data_dict['Novolog (Aspart)'] = aspart_rows
+                if has_lispro:
+                    insulin_data_dict['Humalog (Lispro)'] = lispro_rows
+                
+                chosen_insulin = prioritize_insulin_choice(ptid, insulin_data_dict)
+            elif has_aspart:
+                # Only Aspart available
+                chosen_insulin = 'Novolog (Aspart)'
+                print(f"Patient {ptid}: Only Aspart available, using Novolog (Aspart)")
+            elif has_lispro:
+                # Only Lispro available  
+                chosen_insulin = 'Humalog (Lispro)'
+                print(f"Patient {ptid}: Only Lispro available, using Humalog (Lispro)")
+
+            print(f"Patient {ptid}: Assigned insulin type '{chosen_insulin}' for both bolus and basal")
+            
+            # Return the same insulin for both bolus and basal (pump patients use same insulin)
+            return chosen_insulin, chosen_insulin
+            
+        except Exception as e:
+            print(f"Error processing insulin data for patient {ptid}: {e}")
+            return np.nan, np.nan
     
-    # Apply the insulin mapping
-    user_data_expansion['insulin_type_bolus'] = merged_data.apply(
-        lambda x: get_insulin_type(x['PtID'], x['TrtGroup'], insulin_data, 'bolus'), axis=1
-    )
+    # Apply the improved insulin mapping
+    insulin_results = []
+    for ptid in merged_data['PtID']:
+        bolus, basal = get_pedap_insulin_types_for_patient(ptid, insulin_data)
+        insulin_results.append({
+            'PtID': ptid,
+            'insulin_type_bolus': bolus,
+            'insulin_type_basal': basal
+        })
     
-    user_data_expansion['insulin_type_basal'] = merged_data.apply(
-        lambda x: get_insulin_type(x['PtID'], x['TrtGroup'], insulin_data, 'basal'), axis=1
-    )
+    insulin_df = pd.DataFrame(insulin_results)
+    user_data_expansion = user_data_expansion.merge(insulin_df, left_on='id', right_on='PtID', how='left')
+    user_data_expansion = user_data_expansion.drop(columns=['PtID'])
     
-    # Step 7: Fix insulin types for pump users
-    print("\nStep 7: Correcting insulin types for pump users...")
+    # Step 7: Insulin types are now handled by the improved function
+    print("\nStep 7: Insulin types processed with improved detection logic...")
     
-    # For pump users (SAP/AID), basal insulin should match bolus insulin
-    def fix_pump_insulin_types(row):
-        modality = row['insulin_delivery_modality']
-        bolus = row['insulin_type_bolus']
-        basal = row['insulin_type_basal']
-        
-        # For pump users (SAP/AID), basal should equal bolus
-        if modality in ['SAP', 'AID']:
-            # If we have bolus but different basal, use bolus for basal
-            if pd.notna(bolus) and pd.notna(basal) and bolus != basal:
-                # Check if basal is a long-acting insulin (indicates MDI, not pump)
-                if any(long_acting in str(basal).lower() for long_acting in ['lantus', 'glargine', 'levemir', 'detemir', 'tresiba', 'degludec']):
-                    # This suggests they're MDI users, not pump users - keep original basal
-                    return basal
-                else:
-                    # True pump user - make basal match bolus
-                    return bolus
-            elif pd.notna(bolus) and pd.isna(basal):
-                # Pump user with bolus but no basal - use bolus for basal
-                return bolus
-            elif pd.isna(bolus) and pd.notna(basal):
-                # Pump user with basal but no bolus - use basal for bolus (handle in next step)
-                return basal
-        
-        return basal
-    
-    user_data_expansion['insulin_type_basal'] = user_data_expansion.apply(fix_pump_insulin_types, axis=1)
-    
-    # Also fix bolus to match basal if needed for pump users
-    def fix_bolus_matching(row):
-        modality = row['insulin_delivery_modality']
-        bolus = row['insulin_type_bolus']
-        basal = row['insulin_type_basal']
-        
-        # For pump users (SAP/AID), bolus should equal basal
-        if modality in ['SAP', 'AID']:
-            if pd.isna(bolus) and pd.notna(basal):
-                # If basal is not a long-acting insulin, use it for bolus too
-                if not any(long_acting in str(basal).lower() for long_acting in ['lantus', 'glargine', 'levemir', 'detemir', 'tresiba', 'degludec']):
-                    return basal
-        
-        return bolus
-    
-    user_data_expansion['insulin_type_bolus'] = user_data_expansion.apply(fix_bolus_matching, axis=1)
-    
-    # Final correction of delivery modality based on insulin types
-    def correct_delivery_modality(row):
-        device = row['insulin_delivery_device']
-        algorithm = row['insulin_delivery_algorithm']
-        basal = row['insulin_type_basal']
-        
-        # If device is t:slim X2 with Control-IQ, definitely AID (pump user)
-        if device == 't:slim X2' and algorithm == 'Control-IQ':
-            return 'AID'
-        
-        # If device is t:slim X2 with Basal-IQ, definitely SAP (pump user)
-        if device == 't:slim X2' and algorithm == 'Basal-IQ':
-            return 'SAP'
-        
-        # If device is OmniPod, definitely pump user
-        if device == 'OmniPod':
-            if algorithm == 'Control-IQ':
-                return 'AID'
-            else:
-                return 'SAP'
-        
-        # If device is Medtronic with SmartGuard, definitely SAP (pump user)
-        if 'Medtronic' in str(device) and algorithm == 'SmartGuard':
-            return 'SAP'
-        
-        # For cases with no device/algorithm but long-acting basal insulin, likely MDI
-        if (pd.isna(device) or device == '') and (pd.isna(algorithm) or algorithm == ''):
-            if pd.notna(basal) and any(long_acting in str(basal).lower() for long_acting in ['lantus', 'glargine', 'levemir', 'detemir', 'tresiba', 'degludec']):
-                if '1 time per day' in str(basal) or 'once daily' in str(basal).lower():
-                    return 'MDI'
-        
-        return row['insulin_delivery_modality']
-    
-    user_data_expansion['insulin_delivery_modality'] = user_data_expansion.apply(correct_delivery_modality, axis=1)
     
     print(f"User data expansion created with {len(user_data_expansion)} participants")
     
@@ -263,21 +205,21 @@ def update_pedap_data(df):
         if count > 0:
             print(f"  {col}: {count} null values")
     
-    # Fill any null values in key columns
+    # Verify all participants have consistent device/algorithm/modality (should be no nulls)
     algorithm_nulls = df['insulin_delivery_algorithm'].isnull().sum()
-    if algorithm_nulls > 0:
-        df['insulin_delivery_algorithm'] = df['insulin_delivery_algorithm'].fillna('basal-bolus')
-        print(f"✓ Filled {algorithm_nulls} null values in insulin_delivery_algorithm with 'basal-bolus'")
-    
     modality_nulls = df['insulin_delivery_modality'].isnull().sum()
-    if modality_nulls > 0:
-        df['insulin_delivery_modality'] = df['insulin_delivery_modality'].fillna('SAP')
-        print(f"✓ Filled {modality_nulls} null values in insulin_delivery_modality with 'SAP'")
-    
     device_nulls = df['insulin_delivery_device'].isnull().sum()
-    if device_nulls > 0:
-        df['insulin_delivery_device'] = df['insulin_delivery_device'].fillna('t:slim X2')
-        print(f"✓ Filled {device_nulls} null values in insulin_delivery_device with 't:slim X2'")
+    
+    if algorithm_nulls > 0 or modality_nulls > 0 or device_nulls > 0:
+        print(f"⚠ Warning: Found unexpected null values:")
+        if algorithm_nulls > 0:
+            print(f"  insulin_delivery_algorithm: {algorithm_nulls} nulls")
+        if modality_nulls > 0:
+            print(f"  insulin_delivery_modality: {modality_nulls} nulls")
+        if device_nulls > 0:
+            print(f"  insulin_delivery_device: {device_nulls} nulls")
+    else:
+        print("✓ All participants have consistent device/algorithm/modality assignments")
     
     print(f"\nStandardization complete for {len(df)} participants")
     return df
@@ -299,6 +241,14 @@ def main():
     df.to_csv(output_file, index=False)
     
     print(f"✓ Saved PEDAP dataframe to: {output_file}")
+    
+    # Step 4: Process S3 data if available
+    print("\nAttempting S3 data processing...")
+    s3_df = process_s3_data(df.copy(), 'PEDAP')
+    if s3_df is not None:
+        print("✓ S3 processing completed successfully")
+    else:
+        print("⚠ S3 processing failed, continuing with local data only")
     
     # Final summary
     print("\n" + "=" * 70)
