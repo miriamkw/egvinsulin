@@ -49,61 +49,9 @@ def generate_pedap_data():
     # id
     user_data_expansion['id'] = merged_data['PtID']
     
-    # insulin_delivery_device - Map pump types for PEDAP, ensuring CLC subjects get t:slim X2
-    def map_insulin_delivery_device(pump_type, trt_group):
-        # CLC subjects MUST have t:slim X2 (study protocol requirement)
-        if trt_group == 'CLC':
-            return 't:slim X2'
-        
-        if pd.isna(pump_type):
-            return np.nan
-        
-        pump_str = str(pump_type).strip()
-        
-        if 'OmniPod' in pump_str or 'Omnipod' in pump_str:
-            return 'OmniPod'
-        elif 'Tandem' in pump_str:
-            return 't:slim X2'
-        elif 'Medtronic' in pump_str:
-            return pump_str
-        else:
-            return pump_str
-    
-    user_data_expansion['insulin_delivery_device'] = merged_data.apply(
-        lambda x: map_insulin_delivery_device(x['PumpType'], x['TrtGroup']), axis=1
-    )
-    
-    # insulin_delivery_algorithm - Map based on treatment group, ensuring CLC = Control-IQ
-    def map_insulin_delivery_algorithm(trt_group, device):
-        # CLC subjects MUST have Control-IQ (study protocol requirement)
-        if trt_group == 'CLC':
-            return 'Control-IQ'
-        elif trt_group == 'SC':  # Standard Care
-            if pd.notna(device) and 't:slim X2' in str(device):
-                return 'Basal-IQ'  # Predictive low glucose suspend
-            elif 'OmniPod' in str(device):
-                return 'basal-bolus'
-            elif 'Medtronic' in str(device):
-                return 'SmartGuard'
-            else:
-                return np.nan # Unknown, might be MDI?
-        else:
-            return np.nan
-    
-    user_data_expansion['insulin_delivery_algorithm'] = merged_data.apply(
-        lambda x: map_insulin_delivery_algorithm(x['TrtGroup'], x['PumpType']), axis=1
-    )
-    
-    # cgm_device - PEDAP used Dexcom G6
-    def map_cgm_device(cgm_device):
-        if pd.isna(cgm_device):
-            return 'Dexcom G6'  # Default for PEDAP timeframe (2020-2021)
-        elif 'Dexcom' in str(cgm_device):
-            return 'Dexcom G6'  # PEDAP used G6
-        else:
-            return str(cgm_device)
-    
-    user_data_expansion['cgm_device'] = merged_data['CGMUseDevice'].apply(map_cgm_device)
+    user_data_expansion['insulin_delivery_device'] = 't:slim X2'
+    user_data_expansion['insulin_delivery_algorithm'] = 'Control-IQ'
+    user_data_expansion['cgm_device'] = 'Dexcom G6'
     
     # ethnicity - Combine ethnicity and race like DCLP3
     def combine_ethnicity_race(row):
@@ -137,17 +85,8 @@ def generate_pedap_data():
     
     # is_pregnant - Always False for pediatric population (ages 2-5)
     user_data_expansion['is_pregnant'] = False
-    
-    # insulin_delivery_modality - Map based on algorithm
-    def map_insulin_delivery_modality(algorithm):
-        if algorithm == 'Control-IQ':
-            return 'AID'  # Automated Insulin Delivery
-        elif algorithm in ['Basal-IQ', 'basal-bolus', 'SmartGuard']:
-            return 'SAP'  # Sensor-Augmented Pump
-        else:
-            return np.nan
             
-    user_data_expansion['insulin_delivery_modality'] = user_data_expansion['insulin_delivery_algorithm'].apply(map_insulin_delivery_modality)
+    user_data_expansion['insulin_delivery_modality'] = 'AID'
     
     # Step 6: Load insulin data for insulin types
     print("\nStep 6: Processing insulin types...")

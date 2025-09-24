@@ -147,7 +147,7 @@ def prioritize_insulin_choice(subject_id, insulin_data_dict):
             return list(insulin_data_dict.keys())[0]
         return None
 
-def get_pump_insulin_types_for_patient(ptid, insulin_data):
+def get_pump_insulin_types_for_patient(ptid, insulin_data, insulin_name_column='ParentInsulinListID'):
     """
     Improved insulin type detection for pump patients.
     Determines whether patient used Aspart or Lispro and sets same for both bolus and basal.
@@ -155,29 +155,27 @@ def get_pump_insulin_types_for_patient(ptid, insulin_data):
     Args:
         ptid: Patient ID
         insulin_data: DataFrame containing insulin data
+        insulin_name_column: Name of the column containing insulin names (default: 'ParentInsulinListID')
     
     Returns:
         tuple: (bolus_insulin, basal_insulin) - same insulin for both in pump patients
     """
     try:
-        # Filter to only pump insulin records for this patient
-        patient_pump_insulin = insulin_data[
-            (insulin_data['PtID'] == ptid) & 
-            (insulin_data['InsRoute'] == 'Pump')
-        ].copy()
+        # Get all insulin records for this patient
+        patient_insulin = insulin_data[insulin_data['PtID'] == ptid].copy()
         
-        if patient_pump_insulin.empty:
-            print(f"No pump insulin data found for patient {ptid}")
+        if patient_insulin.empty:
+            print(f"No insulin data found for patient {ptid}")
             return np.nan, np.nan
 
-        # Search for Aspart and Lispro specifically
-        aspart_rows = patient_pump_insulin[
-            patient_pump_insulin['ParentInsulinListID'].str.contains(
+        # Search for Aspart and Lispro in all records (pump filtering will be done in prioritization)
+        aspart_rows = patient_insulin[
+            patient_insulin[insulin_name_column].str.contains(
                 'Aspart', case=False, na=False
             )
         ]
-        lispro_rows = patient_pump_insulin[
-            patient_pump_insulin['ParentInsulinListID'].str.contains(
+        lispro_rows = patient_insulin[
+            patient_insulin[insulin_name_column].str.contains(
                 'Lispro|Humalog', case=False, na=False  
             )
         ]
@@ -214,7 +212,7 @@ def get_pump_insulin_types_for_patient(ptid, insulin_data):
             chosen_insulin = 'Humalog (Lispro)'
             print(f"Patient {ptid}: Only Lispro available, using Humalog (Lispro)")
         else:
-            print(f"Warning: No Aspart or Lispro insulin found for pump patient {ptid}")
+            print(f"Warning: No Aspart or Lispro insulin found for patient {ptid}")
             return np.nan, np.nan
         
         print(f"Patient {ptid}: Assigned insulin type '{chosen_insulin}' for both bolus and basal")
@@ -225,6 +223,7 @@ def get_pump_insulin_types_for_patient(ptid, insulin_data):
     except Exception as e:
         print(f"Error processing insulin data for patient {ptid}: {e}")
         return np.nan, np.nan
+
 
 def process_s3_data(df_expansion_data_copy, dataset_name, bucket_name='replica-general-data-repository'):
     """
