@@ -227,6 +227,67 @@ def generate_dclp5_data():
     
     return final_df
 
+
+def process_extension_phase_logic(df):
+    roster_df = pd.read_csv('data/raw/DCLP5_Dataset_2022-01-20-5e0f3b16-c890-4ace-9e3b-531f3687cf53/PtRoster.txt',
+                            sep='|')
+    ext_phase_df = pd.read_csv('data/raw/DCLP5_Dataset_2022-01-20-5e0f3b16-c890-4ace-9e3b-531f3687cf53/16WkCTV.txt',
+                               sep='|')
+
+    # Convert datetime columns
+    df['date'] = pd.to_datetime(df['date'])
+    roster_df['Phase2StartDt'] = pd.to_datetime(roster_df['Phase2StartDt'])
+
+    # Group by unique patient ID
+    for patient_id, patient_data in df.groupby('id'):
+        # Check if patient has Basal-IQ
+        if 'Basal-IQ' in patient_data['insulin_delivery_algorithm'].values:
+            # Calculate days span for CGM data
+            cgm_dates = patient_data['date']
+            days_span = (cgm_dates.max() - cgm_dates.min()).days
+
+            # Get the insulin delivery algorithm for printing
+            expansion_row = patient_data.iloc[0]  # Get first row for algorithm info
+            print(
+                f"Patient {patient_id}: {days_span} days between first and last CGM value. {expansion_row['insulin_delivery_algorithm']}")
+
+            # Check ExtPhaseCont status
+            ext_phase_info = ext_phase_df[ext_phase_df['PtID'] == patient_id]
+            if not ext_phase_info.empty:
+                ext_phase_cont = ext_phase_info['ExtPhaseCont'].iloc[0]
+                print(f"  Extension Phase Continuation: {ext_phase_cont}")
+            else:
+                print(f"  Extension Phase Continuation: Not found")
+
+            # Look up Phase2StartDt from roster
+            phase2_info = roster_df[roster_df['PtID'] == patient_id]
+
+            if not phase2_info.empty and pd.notna(phase2_info['Phase2StartDt'].iloc[0]):
+                phase2_start = phase2_info['Phase2StartDt'].iloc[0]
+
+                # Calculate days before and after Phase2StartDt
+                days_before = (phase2_start - cgm_dates.min()).days
+                days_after = (cgm_dates.max() - phase2_start).days
+
+                print(f"  Phase 2 start date: {phase2_start.date()}")
+                print(f"  Days before Phase 2 start: {days_before}")
+                print(f"  Days after Phase 2 start: {days_after}")
+
+                # Update insulin delivery algorithm and modality from Phase2StartDt onwards
+                phase2_mask = (df['id'] == patient_id) & (df['date'] >= phase2_start)
+                df.loc[phase2_mask, 'insulin_delivery_algorithm'] = 'Control-IQ'
+                df.loc[phase2_mask, 'insulin_delivery_modality'] = 'AID'
+
+                updated_count = phase2_mask.sum()
+                print(f"  Updated {updated_count} rows to Control-IQ/AID")
+
+            else:
+                print(f"  Phase 2 start date not available for patient {patient_id}")
+
+            print()  # Empty line for readability
+    return df
+
+
 def update_dclp5_data(df):
     """Apply standardizations to DCLP5 data"""
     print("\n" + "=" * 50)
@@ -322,7 +383,12 @@ def main():
         print("✓ S3 processing completed successfully")
     else:
         print("⚠ S3 processing failed, continuing with local data only")
-    
+
+    print("\nProcessing extension phase insulin delivery algorithm-logic")
+    s3_df = process_extension_phase_logic(s3_df)
+    output_file = f"DCLP5_s3_merged.csv"
+    s3_df.to_csv(output_file, index=False)
+
     # Final summary
     print("\n" + "=" * 70)
     print("DCLP5 DATA PROCESSING COMPLETE")

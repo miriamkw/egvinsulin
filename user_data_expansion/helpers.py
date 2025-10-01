@@ -163,12 +163,12 @@ def get_pump_insulin_types_for_patient(ptid, insulin_data, insulin_name_column='
     try:
         # Get all insulin records for this patient
         patient_insulin = insulin_data[insulin_data['PtID'] == ptid].copy()
-        
+
         if patient_insulin.empty:
             print(f"No insulin data found for patient {ptid}")
             return np.nan, np.nan
 
-        # Search for Aspart and Lispro in all records (pump filtering will be done in prioritization)
+        # Search for Aspart, Lispro, and Glulisine in all records (pump filtering will be done in prioritization)
         aspart_rows = patient_insulin[
             patient_insulin[insulin_name_column].str.contains(
                 'Aspart', case=False, na=False
@@ -179,9 +179,15 @@ def get_pump_insulin_types_for_patient(ptid, insulin_data, insulin_name_column='
                 'Lispro|Humalog', case=False, na=False  
             )
         ]
+        glulisine_rows = patient_insulin[
+            patient_insulin[insulin_name_column].str.contains(
+                'Glulisine|Apidra', case=False, na=False  
+            )
+        ]
         
         has_aspart = not aspart_rows.empty
         has_lispro = not lispro_rows.empty
+        has_glulisine = not glulisine_rows.empty
         
         # Log available options
         available_options = []
@@ -189,6 +195,8 @@ def get_pump_insulin_types_for_patient(ptid, insulin_data, insulin_name_column='
             available_options.append("Aspart")
         if has_lispro:
             available_options.append("Lispro")
+        if has_glulisine:
+            available_options.append("Glulisine")
         
         if len(available_options) > 1:
             print(f"Patient {ptid}: Has multiple insulin options: {', '.join(available_options)}")
@@ -201,6 +209,8 @@ def get_pump_insulin_types_for_patient(ptid, insulin_data, insulin_name_column='
                 insulin_data_dict['Novolog (Aspart)'] = aspart_rows
             if has_lispro:
                 insulin_data_dict['Humalog (Lispro)'] = lispro_rows
+            if has_glulisine:
+                insulin_data_dict['Apidra (Glulisine)'] = glulisine_rows
             
             chosen_insulin = prioritize_insulin_choice(ptid, insulin_data_dict)
         elif has_aspart:
@@ -211,8 +221,12 @@ def get_pump_insulin_types_for_patient(ptid, insulin_data, insulin_name_column='
             # Only Lispro available  
             chosen_insulin = 'Humalog (Lispro)'
             print(f"Patient {ptid}: Only Lispro available, using Humalog (Lispro)")
+        elif has_glulisine:
+            # Only Glulisine available
+            chosen_insulin = 'Apidra (Glulisine)'
+            print(f"Patient {ptid}: Only Glulisine available, using Apidra (Glulisine)")
         else:
-            print(f"Warning: No Aspart or Lispro insulin found for patient {ptid}")
+            print(f"Warning: No Aspart, Lispro, or Glulisine insulin found for patient {ptid}")
             return np.nan, np.nan
         
         print(f"Patient {ptid}: Assigned insulin type '{chosen_insulin}' for both bolus and basal")
@@ -260,22 +274,76 @@ def process_s3_data(df_expansion_data_copy, dataset_name, bucket_name='replica-g
         
         # Create a mapping of id to expansion data for efficient lookup
         expansion_dict = df_expansion_data_copy.set_index('id').to_dict('index')
+
+        # Group by patient id
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')  # converts invalid dates to NaT
+        rows_to_drop = []  # Track indices of rows to drop
         
-        # Update matching columns for each id that exists in both datasets
-        updated_count = 0
-        for idx, row in df.iterrows():
-            patient_id = row['id']
+        for patient_id, group in df.groupby('id'):
             if patient_id in expansion_dict:
                 expansion_row = expansion_dict[patient_id]
+                # Update matching columns
                 for col in matching_columns:
                     if col != 'id' and col in expansion_row:
-                        # Only update if expansion data has a non-null value
                         expansion_value = expansion_row[col]
                         if pd.notna(expansion_value):
-                            df.at[idx, col] = expansion_value
-                updated_count += 1
-        
-        print(f"✓ Updated {updated_count} patient records with expansion data")
+                            df.loc[df['id'] == patient_id, col] = expansion_value
+
+            # Data cleaning: sort by date while preserving original indices
+            sorted_group = group.sort_values('date')
+            
+            if len(sorted_group) > 0:
+                # Step 1: Replace zeros with NaN for insulin columns
+                # Ensure first and last non-zero values are preserved
+                insulin_cols = ['insulin', 'bolus', 'basal']
+                
+                for col in insulin_cols:
+                    if col in df.columns:
+                        # Get column values for this patient (sorted by date)
+                        col_values = df.loc[sorted_group.index, col]
+                        
+                        # Find first and last non-zero values
+                        non_zero_mask = (col_values != 0) & pd.notna(col_values)
+                        non_zero_indices = sorted_group.index[non_zero_mask]
+                        
+                        if len(non_zero_indices) > 0:
+                            first_nonzero_idx = non_zero_indices[0]
+                            last_nonzero_idx = non_zero_indices[-1]
+                            
+                            # Convert zeros before first non-zero to NaN
+                            before_first = sorted_group.index[sorted_group.index < first_nonzero_idx]
+                            zero_before_mask = df.loc[before_first, col] == 0
+                            df.loc[before_first[zero_before_mask], col] = np.nan
+                            
+                            # Convert zeros after last non-zero to NaN
+                            after_last = sorted_group.index[sorted_group.index > last_nonzero_idx]
+                            zero_after_mask = df.loc[after_last, col] == 0
+                            df.loc[after_last[zero_after_mask], col] = np.nan
+                
+                # Step 2: Remove edge rows where CGM, basal, and bolus are all NaN
+                check_cols = ['CGM', 'basal', 'bolus']
+                available_check_cols = [col for col in check_cols if col in df.columns]
+                
+                if available_check_cols:
+                    # Remove from start
+                    for idx in sorted_group.index:
+                        if all(pd.isna(df.loc[idx, col]) for col in available_check_cols):
+                            rows_to_drop.append(idx)
+                        else:
+                            break  # Stop at first valid row
+                    
+                    # Remove from end (if more than one row)
+                    if len(sorted_group) > 1:
+                        for idx in reversed(sorted_group.index):
+                            if idx not in rows_to_drop and all(pd.isna(df.loc[idx, col]) for col in available_check_cols):
+                                rows_to_drop.append(idx)
+                            else:
+                                break  # Stop at first valid row from end
+
+        # Drop identified rows while preserving original order
+        if rows_to_drop:
+            df = df.drop(index=rows_to_drop).reset_index(drop=True)
+            print(f"✓ Removed {len(rows_to_drop)} edge rows with missing CGM/basal/bolus data")
 
         # Step 3: Convert weight/height units
         print("\nStep 3: Converting weight and height units...")
