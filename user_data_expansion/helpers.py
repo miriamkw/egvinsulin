@@ -91,18 +91,10 @@ def prioritize_insulin_choice(subject_id, insulin_data_dict):
                     df_rows['start_date_parsed'].notna() & 
                     df_rows['stop_date_parsed'].notna()
                 ).any()
-            
-            # Priority 3: Last available (most recent start date)
-            last_available_score = 0
-            if 'start_date_parsed' in df_rows.columns:
-                valid_start_dates = df_rows['start_date_parsed'].dropna()
-                if not valid_start_dates.empty:
-                    last_available_score = valid_start_dates.max().timestamp()
-            
+
             return (
                 has_pump_route,
                 has_valid_dates, 
-                last_available_score
             )
         
         # Evaluate all insulin types
@@ -116,7 +108,7 @@ def prioritize_insulin_choice(subject_id, insulin_data_dict):
             key=lambda x: x[1],
             reverse=True
         )
-        
+
         # Select the highest priority insulin
         chosen_insulin_name = sorted_insulins[0][0]
         chosen_score = sorted_insulins[0][1]
@@ -127,17 +119,16 @@ def prioritize_insulin_choice(subject_id, insulin_data_dict):
             priority_reasons.append("InsRoute=Pump")
         if chosen_score[1]:  # Valid dates
             priority_reasons.append("valid start/end dates")
-        if chosen_score[2] > 0:  # Has some date info
-            priority_reasons.append("last available")
-        
+
         reason = " + ".join(priority_reasons) if priority_reasons else "default selection"
         print(f"Subject {subject_id}: Chose {chosen_insulin_name} based on: {reason}")
         
         # Check if there were ties and log
         ties = [name for name, score in sorted_insulins if score == chosen_score]
         if len(ties) > 1:
-            print(f"Subject {subject_id}: Tie between {', '.join(ties)}, selected {chosen_insulin_name}")
-        
+            print(f"Subject {subject_id}: Tie between {', '.join(ties)}, using default")
+            return None
+
         return chosen_insulin_name
         
     except Exception as e:
@@ -147,7 +138,12 @@ def prioritize_insulin_choice(subject_id, insulin_data_dict):
             return list(insulin_data_dict.keys())[0]
         return None
 
-def get_pump_insulin_types_for_patient(ptid, insulin_data, insulin_name_column='ParentInsulinListID'):
+
+# TODO: Input can be "valid alternatives" as well
+# TODO: Input can be "default value"
+# Logic: If several alternatives, return default
+# Logic: If no alternatives, return default
+def get_pump_insulin_types_for_patient(ptid, insulin_data, insulin_name_column='ParentInsulinListID', default=None):
     """
     Improved insulin type detection for pump patients.
     Determines whether patient used Aspart or Lispro and sets same for both bolus and basal.
@@ -166,7 +162,7 @@ def get_pump_insulin_types_for_patient(ptid, insulin_data, insulin_name_column='
 
         if patient_insulin.empty:
             print(f"No insulin data found for patient {ptid}")
-            return np.nan, np.nan
+            return default, default
 
         # Search for Aspart, Lispro, and Glulisine in all records (pump filtering will be done in prioritization)
         aspart_rows = patient_insulin[
@@ -213,6 +209,8 @@ def get_pump_insulin_types_for_patient(ptid, insulin_data, insulin_name_column='
                 insulin_data_dict['Apidra (Glulisine)'] = glulisine_rows
             
             chosen_insulin = prioritize_insulin_choice(ptid, insulin_data_dict)
+            if chosen_insulin is None:
+                return default, default
         elif has_aspart:
             # Only Aspart available
             chosen_insulin = 'Novolog (Aspart)'
@@ -227,7 +225,7 @@ def get_pump_insulin_types_for_patient(ptid, insulin_data, insulin_name_column='
             print(f"Patient {ptid}: Only Glulisine available, using Apidra (Glulisine)")
         else:
             print(f"Warning: No Aspart, Lispro, or Glulisine insulin found for patient {ptid}")
-            return np.nan, np.nan
+            return default, default
         
         print(f"Patient {ptid}: Assigned insulin type '{chosen_insulin}' for both bolus and basal")
         
@@ -236,10 +234,10 @@ def get_pump_insulin_types_for_patient(ptid, insulin_data, insulin_name_column='
         
     except Exception as e:
         print(f"Error processing insulin data for patient {ptid}: {e}")
-        return np.nan, np.nan
+        return default, default
 
 
-def process_s3_data(df_expansion_data_copy, dataset_name, bucket_name='replica-general-data-repository'):
+def process_s3_data(df_expansion_data_copy, dataset_name, bucket_name='replica-general-data-repository', df=None):
     """
     Process dataset data with S3 integration - generalized version
     
@@ -258,19 +256,20 @@ def process_s3_data(df_expansion_data_copy, dataset_name, bucket_name='replica-g
     file_name = f'{dataset_name}.csv'
     
     try:
-        # Step 1: Load from S3
-        print("Step 1: Loading data from S3...")
-        obj_key = f'processed_data_final_expanded/{file_name}'
-        s3 = boto3.client("s3")
-        obj_response = s3.get_object(Bucket=bucket_name, Key=obj_key)
-        content = obj_response["Body"].read().decode("utf-8")
-        df = pd.read_csv(StringIO(content), low_memory=False)
-        print(f"✓ Successfully loaded S3 data: {df.shape}")
+        if df is None:
+            # Step 1: Load from S3
+            print("Step 1: Loading data from S3...")
+            obj_key = f'processed_data_final_expanded/{file_name}'
+            s3 = boto3.client("s3")
+            obj_response = s3.get_object(Bucket=bucket_name, Key=obj_key)
+            content = obj_response["Body"].read().decode("utf-8")
+            df = pd.read_csv(StringIO(content), low_memory=False)
+            print(f"✓ Successfully loaded S3 data: {df.shape}")
 
         # Step 2: Overwrite matching columns with expansion data (block sparse per id)
         print("\nStep 2: Merging expansion data with S3 data...")
-        matching_columns = [col for col in df_expansion_data_copy.columns if col in df.columns]
-        print(f"Found {len(matching_columns)} matching columns: {matching_columns}")
+        expansion_columns = [col for col in df_expansion_data_copy.columns]
+        print(f"Found {len(expansion_columns)} expansion columns: {expansion_columns}")
         
         # Create a mapping of id to expansion data for efficient lookup
         expansion_dict = df_expansion_data_copy.set_index('id').to_dict('index')
@@ -283,7 +282,7 @@ def process_s3_data(df_expansion_data_copy, dataset_name, bucket_name='replica-g
             if patient_id in expansion_dict:
                 expansion_row = expansion_dict[patient_id]
                 # Update matching columns
-                for col in matching_columns:
+                for col in expansion_columns:
                     if col != 'id' and col in expansion_row:
                         expansion_value = expansion_row[col]
                         if pd.notna(expansion_value):

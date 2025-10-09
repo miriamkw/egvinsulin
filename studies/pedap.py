@@ -21,7 +21,7 @@ class PEDAP(StudyDataset):
                                                                                                  'BasalRate'],
                           subset=subset)
         df_cgm = get_df(os.path.join(data_table_path, 'PEDAPTandemCGMDATAGXB.txt'), usecols=['PtID', 'DeviceDtTm',
-                                                                                             'CGMValue'],
+                                                                                             'CGMValue', 'HighLowIndicator'],
                           subset=subset)
         
         # remove duplicated rows
@@ -73,8 +73,16 @@ class PEDAP(StudyDataset):
         return temp
 
     def _extract_cgm_history(self):
-        temp = self.df_cgm[['PtID', 'DeviceDtTm', 'CGMValue']].astype({'PtID':str}).copy()
+        import numpy as np
+        temp = self.df_cgm[['PtID', 'DeviceDtTm', 'CGMValue', 'HighLowIndicator']].astype({'PtID':str}).copy()
+
+        # Filter out 0-values
+        temp = temp.loc[temp['CGMValue'] != 0, :]
+
         #to pass the data set validaiton
         temp['DeviceDtTm'] = pd.to_datetime(temp.DeviceDtTm)
         temp = temp.rename(columns={'PtID': 'patient_id', 'DeviceDtTm': 'datetime', 'CGMValue': 'cgm'})
+        
+        # Drop the HighLowIndicator column as it's no longer needed
+        temp = temp.drop(columns=['HighLowIndicator'])
         return temp

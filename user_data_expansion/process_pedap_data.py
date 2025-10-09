@@ -29,18 +29,27 @@ def generate_pedap_data():
     screening = pd.read_csv(os.path.join(base_path, 'PEDAPDiabScreening.txt'), delimiter='|')
     print(f"Screening shape: {screening.shape}")
     
-    # Step 3: Filter completed participants only
-    print("\nStep 3: Filtering completed participants...")
-    completed_roster = roster[roster['PtStatus'] == 'Completed'].copy()
-    print(f"Completed participants: {len(completed_roster)}")
+    # Step 3: Get patient IDs from CGM data file
+    print("\nStep 3: Reading CGM data to get patient IDs...")
+    cgm_file = os.path.join(base_path, 'PEDAPTandemCGMDATAGXB.txt')
+    cgm_data = pd.read_csv(cgm_file, delimiter='|')
+    cgm_patient_ids = cgm_data['PtID'].unique()
+    print(f"CGM data shape: {cgm_data.shape}")
+    print(f"Unique patient IDs with CGM data: {len(cgm_patient_ids)}")
     
-    # Step 4: Merge roster with screening data
-    print("\nStep 4: Merging roster with screening data...")
-    merged_data = completed_roster.merge(screening, on='PtID', how='inner')
+    # Step 4: Filter roster to include only patients with CGM data
+    print("\nStep 4: Filtering roster to patients with CGM data...")
+    cgm_roster = roster[roster['PtID'].isin(cgm_patient_ids)].copy()
+    print(f"Patients with CGM data: {len(cgm_roster)}")
+    print(f"Patient status distribution: {cgm_roster['PtStatus'].value_counts().to_dict()}")
+    
+    # Step 5: Merge roster with screening data
+    print("\nStep 5: Merging roster with screening data...")
+    merged_data = cgm_roster.merge(screening, on='PtID', how='inner')
     print(f"Merged data shape: {merged_data.shape}")
     
-    # Step 5: Create user data expansion dataframe
-    print("\nStep 5: Creating user data expansion...")
+    # Step 6: Create user data expansion dataframe
+    print("\nStep 6: Creating user data expansion...")
     user_data_expansion = pd.DataFrame()
     
     # id
@@ -51,7 +60,11 @@ def generate_pedap_data():
     user_data_expansion['insulin_delivery_algorithm'] = 'Control-IQ'
     user_data_expansion['cgm_device'] = 'Dexcom G6'
     user_data_expansion['insulin_delivery_modality'] = 'AID'
-    
+
+    user_data_expansion['treatment_group'] = merged_data['TrtGroup']
+    user_data_expansion['randomization_date'] = pd.to_datetime(merged_data['RandDt'])
+    user_data_expansion['extension_date'] = np.nan  # Not available
+
     # ethnicity - Combine ethnicity and race like DCLP3
     def combine_ethnicity_race(row):
         ethnicity = str(row['Ethnicity']) if pd.notna(row['Ethnicity']) else ''
@@ -85,14 +98,14 @@ def generate_pedap_data():
     # is_pregnant - Always False for pediatric population (ages 2-5)
     user_data_expansion['is_pregnant'] = False
     
-    # Step 6: Load insulin data for insulin types
-    print("\nStep 6: Processing insulin types...")
+    # Step 7: Load insulin data for insulin types
+    print("\nStep 7: Processing insulin types...")
     insulin_data = pd.read_csv(os.path.join(base_path, 'PEDAPInsulin.txt'), delimiter='|')
     print(f"Insulin data shape: {insulin_data.shape}")
     print("Insulin type start distribution:")
     print(insulin_data['InsTypeStart'].value_counts().to_dict())
     
-    def get_pedap_insulin_types_for_patient(ptid, insulin_data):
+    def get_pedap_insulin_types_for_patient(ptid, insulin_data, default='Humalog (Lispro) or Novolog (Aspart)'):
         """
         PEDAP-specific insulin type detection that handles both pump and MDI users.
         Uses improved prioritization logic while respecting PEDAP's enrollment timing priorities.
@@ -103,7 +116,7 @@ def generate_pedap_data():
             
             if patient_insulin.empty:
                 print(f"No insulin data found for patient {ptid}")
-                return np.nan, np.nan
+                return default, default
 
             # Search for Aspart and Lispro in all records (PEDAP's main fast-acting insulins)
             aspart_rows = patient_insulin[
@@ -142,6 +155,8 @@ def generate_pedap_data():
                     insulin_data_dict['Humalog (Lispro)'] = lispro_rows
                 
                 chosen_insulin = prioritize_insulin_choice(ptid, insulin_data_dict)
+                if chosen_insulin is None:
+                    return default, default
             elif has_aspart:
                 # Only Aspart available
                 chosen_insulin = 'Novolog (Aspart)'
@@ -158,7 +173,7 @@ def generate_pedap_data():
             
         except Exception as e:
             print(f"Error processing insulin data for patient {ptid}: {e}")
-            return np.nan, np.nan
+            return default, default
     
     # Apply the improved insulin mapping
     insulin_results = []
@@ -174,8 +189,8 @@ def generate_pedap_data():
     user_data_expansion = user_data_expansion.merge(insulin_df, left_on='id', right_on='PtID', how='left')
     user_data_expansion = user_data_expansion.drop(columns=['PtID'])
     
-    # Step 7: Insulin types are now handled by the improved function
-    print("\nStep 7: Insulin types processed with improved detection logic...")
+    # Step 8: Insulin types are now handled by the improved function
+    print("\nStep 8: Insulin types processed with improved detection logic...")
     
     
     print(f"User data expansion created with {len(user_data_expansion)} participants")
@@ -244,7 +259,16 @@ def main():
     
     # Step 4: Process S3 data if available
     print("\nAttempting S3 data processing...")
-    s3_df = process_s3_data(df.copy(), 'PEDAP')
+    resampled_df = pd.read_csv('data/resampled/PEDAP.csv')
+    resampled_df['basal'] = resampled_df['basal'] / 12  # From U/hr to U
+    resampled_df['insulin'] = resampled_df['bolus'].fillna(0) + resampled_df['basal']
+    resampled_df['gender'] = resampled_df['gender'].map({'F': 'Female', 'M': 'Male'})
+    resampled_df['source_file'] = 'PEDAP'
+    for col in df.columns:
+        if col not in resampled_df.columns:
+            resampled_df[col] = np.nan
+
+    s3_df = process_s3_data(df.copy(), 'PEDAP', df=resampled_df)
     if s3_df is not None:
         print("✓ S3 processing completed successfully")
     else:

@@ -136,7 +136,11 @@ def generate_dclp5_data():
         final_df = final_df.merge(ethnicity_mapping, on='PtID', how='left')
         
         print(f"Ethnicity categories: {len(final_df['ethnicity'].unique())} unique values")
-        
+
+        final_df = final_df.merge(screening_df[['PtID', 'Gender']], on='PtID', how='left')
+        final_df.rename(columns={'Gender': 'gender'}, inplace=True)
+        final_df['gender'] = final_df['gender'].map({'M': 'Male', 'F': 'Female'})
+
     except Exception as e:
         print(f"Error reading ethnicity data: {e}")
         final_df['ethnicity'] = np.nan
@@ -190,7 +194,7 @@ def generate_dclp5_data():
     
     pump_insulin_results = []
     for ptid in final_df['PtID']:
-        bolus, basal = get_pump_insulin_types_for_patient(ptid, insulin_df)
+        bolus, basal = get_pump_insulin_types_for_patient(ptid, insulin_df, insulin_name_column='ParentInsulinListID', default='Humalog (Lispro) or Novolog (Aspart)')
         pump_insulin_results.append({
             'PtID': ptid,
             'insulin_type_bolus': bolus,
@@ -218,8 +222,8 @@ def generate_dclp5_data():
     
     # Step 12: Final cleanup
     print("\nStep 12: Final cleanup...")
-    final_df = final_df.rename(columns={'PtID': 'id'})
-    columns_to_drop = ['EnrollDt', 'RandDt', 'trtGroup', 'PtStatus', 'SiteID']
+    final_df = final_df.rename(columns={'PtID': 'id', 'trtGroup': 'treatment_group', 'RandDt': 'randomization_date'})
+    columns_to_drop = ['EnrollDt', 'PtStatus', 'SiteID']
     final_df = final_df.drop(columns=columns_to_drop)
     
     print(f"Final shape: {final_df.shape}")

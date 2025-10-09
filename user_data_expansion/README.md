@@ -25,3 +25,33 @@ Extension phase will consist of a partial crossover: All randomized participants
 
 
 
+# PEDAP
+
+## CGM Data Quality Indicators
+
+Values below and above 40 and 400 are set to 0 in the dataset, which Peter from JAEB made us aware of. In the dataset, there is a High/Low indicator, flagging the value to either below 40 or above 400. We analyzed the values before and after the High/Low value as a sanity check, and found the following:
+```
+ANALYZING INDICATOR HIGH
+Min CGM value before 41.0
+Median CGM value before 390.0
+Mean CGM value before 324.0652713728272
+Max CGM value before 400.0
+Min CGM value after 49.0
+Median CGM value after 389.0
+Mean CGM value after 320.9964576691463
+Max CGM value after 400.0
+
+ANALYZING INDICATOR LOW
+Min CGM value before 40.0
+Median CGM value before 47.0
+Mean CGM value before 61.64640410958904
+Max CGM value before 389.0
+Min CGM value after 40.0
+Median CGM value after 48.0
+Mean CGM value after 66.59519725557462
+Max CGM value after 374.0
+Remaining 0 values: 0
+```
+As we observe, it seems like some high / low value indicators have been mixed up or with high levels of noise. Hence, we set these values to nan. There are in total 31541 values that are changed from 0 to nan, out of a total of 5 026 538 CGM values in the dataset. 
+
+

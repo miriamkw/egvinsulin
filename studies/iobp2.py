@@ -24,7 +24,7 @@ class IOBP2(StudyDataset):
 
         self.df = get_df(self.iletFilePath, usecols=['PtID', 'DeviceDtTm', 'CGMVal', 'BasalDelivPrev','BolusDelivPrev',
                                                      'MealBolusDelivPrev'], subset=subset, dtype={'PtID': str, 'CGMVal': float})
-        
+
         self.df.rename(columns={'PtID': 'patient_id', 'DeviceDtTm': 'datetime', 'CGMVal': 'cgm', 
                         'BasalDelivPrev': 'basal_rate', 
                         'BolusDelivPrev': 'bolus', 'MealBolusDelivPrev': 'meal_bolus'}, inplace=True)

@@ -33,7 +33,7 @@ def generate_flair_data():
 
     # Step 4: Create base dataframe
     print("\nStep 4: Creating base dataframe...")
-    final_df = roster_df[['PtID', 'SiteID', 'EnrollDt', 'RandDt', 'PtStatus', 'TrtGroup', 'AgeAsofEnrollDt']].copy()
+    final_df = roster_df[['PtID', 'SiteID', 'EnrollDt', 'RandDt', 'PtStatus', 'TrtGroup', 'AgeAsofEnrollDt', 'RandDt']].copy()
 
     # FLAIR used MiniMed 670G system
     final_df['insulin_delivery_device'] = 'MiniMed 670G'  # Based on protocol
@@ -91,7 +91,12 @@ def generate_flair_data():
         
         print(f"Ethnicity categories: {len(final_df['ethnicity'].unique())} unique values")
         print(f"Ethnicity distribution: {final_df['ethnicity'].value_counts(dropna=False).to_dict()}")
-        
+
+        # Add gender
+        final_df = final_df.merge(screening_df[['PtID', 'Sex']], on='PtID', how='left')
+        final_df.rename(columns={'Sex': 'gender'}, inplace=True)
+        final_df['gender'] = final_df['gender'].map({'M': 'Male', 'F': 'Female'})
+
     except Exception as e:
         print(f"Error reading ethnicity data: {e}")
         final_df['ethnicity'] = np.nan
@@ -120,7 +125,7 @@ def generate_flair_data():
     
     pump_insulin_results = []
     for ptid in final_df['PtID']:
-        bolus, basal = get_pump_insulin_types_for_patient(ptid, insulin_df, insulin_name_column='InsulinName')
+        bolus, basal = get_pump_insulin_types_for_patient(ptid, insulin_df, insulin_name_column='InsulinName', default='Humalog (Lispro) or Novolog (Aspart)')
         pump_insulin_results.append({
             'PtID': ptid,
             'insulin_type_bolus': bolus,
@@ -148,8 +153,8 @@ def generate_flair_data():
     
     # Step 11: Final cleanup
     print("\nStep 11: Final cleanup...")
-    final_df = final_df.rename(columns={'PtID': 'id'})
-    columns_to_drop = ['SiteID', 'EnrollDt', 'RandDt', 'PtStatus', 'TrtGroup', 'AgeAsofEnrollDt']
+    final_df = final_df.rename(columns={'PtID': 'id', 'TrtGroup': 'treatment_group', 'RandDt': 'randomization_date'})
+    columns_to_drop = ['SiteID', 'EnrollDt', 'PtStatus', 'AgeAsofEnrollDt']
     final_df = final_df.drop(columns=columns_to_drop)
     
     print(f"Final shape: {final_df.shape}")
