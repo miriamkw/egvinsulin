@@ -144,18 +144,6 @@ def generate_dclp3_data():
     
     # Step 11: Add insulin types (pump-only)
     print("\nStep 11: Adding insulin types...")
-    bolus_insulins = [
-        'Novolog (Aspart)', 'Humalog (Lispro)', 'Novolog Fiasp',
-        'Regular (R) (Humulin R or Novolin R)', 'Admelog'
-    ]
-    
-    basal_insulins = [
-        'Lantus (Glargine) 2 times per day', 'Lantus (Glargine) 1 time per day', 
-        'Degludec (Tresiba)', 'Toujeo (Glargine, U300)', 
-        'Basaglar (Glargine, U100)', 'Levemir (Detemir) 1 time per day'
-    ]
-    
-    
     pump_insulin_results = []
     for ptid in final_df['PtID']:
         bolus, basal = get_pump_insulin_types_for_patient(ptid, insulin_df, default='Humalog (Lispro) or Novolog (Aspart)')
@@ -237,10 +225,12 @@ def main():
     output_file = os.path.join(output_path, "DCLP3.csv")
     df.to_csv(output_file, index=False)
     print(f"✓ Saved DCLP3 dataframe to: {output_file}")
+
+    df_resampled = pd.read_csv('data/resampled/DCLP3.csv')
     
     # Step 4: Process S3 data if available
     print("\nAttempting S3 data processing...")
-    s3_df = process_s3_data(df.copy(), 'DCLP3')
+    s3_df = process_s3_data(df.copy(), 'DCLP3', df=df_resampled)
     if s3_df is not None:
         print("✓ S3 processing completed successfully")
     else:

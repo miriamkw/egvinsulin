@@ -379,10 +379,12 @@ def main():
     df.to_csv(output_file, index=False)
     
     print(f"✓ Saved DCLP5 dataframe to: {output_file}")
+
+    df_resampled = pd.read_csv('data/resampled/DCLP3.csv')
     
     # Step 4: Process S3 data if available
     print("\nAttempting S3 data processing...")
-    s3_df = process_s3_data(df.copy(), 'DCLP5')
+    s3_df = process_s3_data(df.copy(), 'DCLP5', df=df_resampled)
     if s3_df is not None:
         print("✓ S3 processing completed successfully")
     else:
