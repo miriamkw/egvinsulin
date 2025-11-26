@@ -277,10 +277,16 @@ def main():
     df.to_csv(output_file, index=False)
     
     print(f"✓ Saved FLAIR dataframe to: {output_file}")
+
+    resampled_df = pd.read_csv(f'data/resampled/Flair.csv')
+    resampled_df['basal'] = resampled_df['basal'] / 12  # From U/hr to U
+    resampled_df['insulin'] = resampled_df['bolus'].fillna(0) + resampled_df['basal']
+    resampled_df['gender'] = resampled_df['gender'].map({'F': 'Female', 'M': 'Male'})
+    resampled_df['source_file'] = 'Flair'
     
     # Step 4: Process S3 data if available
     print("\nAttempting S3 data processing...")
-    s3_df = process_s3_data(df.copy(), 'Flair')
+    s3_df = process_s3_data(df.copy(), 'Flair', df=resampled_df)
     if s3_df is not None:
         print("✓ S3 processing completed successfully")
     else:

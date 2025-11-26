@@ -27,6 +27,10 @@ Extension phase will consist of a partial crossover: All randomized participants
 
 # PEDAP
 
+Processing notes: 
+- We found 7 carb values above 500g, out of a total of 102639 non-zero carb values. These values were set to nan.  
+
+
 ## CGM Data Quality Indicators
 
 Values below and above 40 and 400 are set to 0 in the dataset, which Peter from JAEB made us aware of. In the dataset, there is a High/Low indicator, flagging the value to either below 40 or above 400. We analyzed the values before and after the High/Low value as a sanity check, and found the following:
@@ -53,5 +57,12 @@ Max CGM value after 374.0
 Remaining 0 values: 0
 ```
 As we observe, it seems like some high / low value indicators have been mixed up or with high levels of noise. Hence, we set these values to nan. There are in total 31541 values that are changed from 0 to nan, out of a total of 5 026 538 CGM values in the dataset. 
+
+
+# Loop
+
+Processing notes: 
+- The raw carbohydrate values in "LOOPDeviceFood.txt" have several duplicates where the carbohydrate and date value is identical. If we do not delete them, and sum them within 5-minute intervals, the meal size within a 5-minute interval becomes up to 102120g of carbs, which is not plausible as a meal size in one sitting. Hence, we delete all duplicate values where the value and date are identical. 
+- We found 20 insulin doses above 50 units of insulin in Loop (and all subjects are AID, which makes large doses more unlikely than with MDI), out of 61701003 non-zero insulin values in the dataset. These doses are set to nan, and the following eight hours of data are also set to nan. 
 
 

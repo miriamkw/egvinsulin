@@ -227,7 +227,8 @@ def main():
     print(f"✓ Saved DCLP3 dataframe to: {output_file}")
 
     df_resampled = pd.read_csv('data/resampled/DCLP3.csv')
-    
+    df_resampled['insulin'] = df_resampled['bolus'].fillna(0) + df_resampled['basal']
+
     # Step 4: Process S3 data if available
     print("\nAttempting S3 data processing...")
     s3_df = process_s3_data(df.copy(), 'DCLP3', df=df_resampled)

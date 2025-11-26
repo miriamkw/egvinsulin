@@ -105,7 +105,7 @@ def generate_replacebg_data():
     # insulin_delivery_algorithm - REPLACE-BG was not an insulin delivery algorithm study
     # This was a CGM monitoring comparison study
     # Default to standard basal-bolus therapy (most common for T1D at study time)
-    user_data_expansion['insulin_delivery_algorithm'] = 'basal-bolus'
+    user_data_expansion['insulin_delivery_algorithm'] = 'Basal-Bolus'
 
     user_data_expansion['cgm_device'] = 'Dexcom G4'
     
@@ -232,10 +232,16 @@ def main():
     df.to_csv(output_file, index=False)
     
     print(f"✓ Saved REPLACE-BG dataframe to: {output_file}")
-    
+
+    resampled_df = pd.read_csv(f'data/resampled/ReplaceBG.csv')
+    resampled_df['date'] = resampled_df['datetime']
+    resampled_df['basal'] = resampled_df['basal'] / 12  # From U/hr to U
+    resampled_df['insulin'] = resampled_df['bolus'].fillna(0) + resampled_df['basal']
+    resampled_df['source_file'] = 'ReplaceBG'
+
     # Step 4: Process S3 data if available
     print("\nAttempting S3 data processing...")
-    s3_df = process_s3_data(df.copy(), 'ReplaceBG')
+    s3_df = process_s3_data(df.copy(), 'ReplaceBG', df=resampled_df)
     if s3_df is not None:
         print("✓ S3 processing completed successfully")
     else:

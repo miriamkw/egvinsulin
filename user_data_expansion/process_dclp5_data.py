@@ -380,7 +380,8 @@ def main():
     
     print(f"✓ Saved DCLP5 dataframe to: {output_file}")
 
-    df_resampled = pd.read_csv('data/resampled/DCLP3.csv')
+    df_resampled = pd.read_csv('data/resampled/DCLP5.csv')
+    df_resampled['insulin'] = df_resampled['bolus'].fillna(0) + df_resampled['basal']
     
     # Step 4: Process S3 data if available
     print("\nAttempting S3 data processing...")
@@ -392,7 +393,7 @@ def main():
 
     print("\nProcessing extension phase insulin delivery algorithm-logic")
     s3_df = process_extension_phase_logic(s3_df)
-    output_file = f"DCLP5_s3_merged.csv"
+    output_file = f"DCLP5.csv"
     s3_df.to_csv(output_file, index=False)
 
     # Final summary

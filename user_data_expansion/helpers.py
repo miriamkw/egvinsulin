@@ -266,6 +266,19 @@ def process_s3_data(df_expansion_data_copy, dataset_name, bucket_name='replica-g
             df = pd.read_csv(StringIO(content), low_memory=False)
             print(f"✓ Successfully loaded S3 data: {df.shape}")
 
+        # Drop subjects that have no cgm values or no insulin data
+        valid_ids = df.groupby('id').filter(
+            lambda g: g['CGM'].notna().any() and
+                      (g['bolus'].gt(0).any() or
+                       g['basal'].gt(0).any() or
+                       g['insulin'].gt(0).any())
+        )['id'].unique()
+        all_ids = df['id'].unique()
+        invalid_ids = [i for i in all_ids if i not in valid_ids]
+        if len(invalid_ids) > 0:
+            print("Warning: IDs with no CGM or insulin data:", invalid_ids)
+        df = df[df['id'].isin(valid_ids)]
+
         # Step 2: Overwrite matching columns with expansion data (block sparse per id)
         print("\nStep 2: Merging expansion data with S3 data...")
         expansion_columns = [col for col in df_expansion_data_copy.columns]
@@ -279,6 +292,26 @@ def process_s3_data(df_expansion_data_copy, dataset_name, bucket_name='replica-g
         rows_to_drop = []  # Track indices of rows to drop
         
         for patient_id, group in df.groupby('id'):
+            # Data cleaning: sort by date while preserving original indices
+            sorted_group = group.sort_values('date')
+
+            # Set negative insulin values to nan (there are two of them in the entire dataset)
+            # We also set the following 8 hours of data after the negative dose to nan
+            for dose_col in ['insulin', 'bolus']:
+                if dose_col in sorted_group.columns:
+                    bad_idx = sorted_group.index[(sorted_group[dose_col] < 0) | (sorted_group[dose_col] > 50)]
+                    if len(bad_idx) > 0:
+                        print(f"Warning: Subject {patient_id} has {len(bad_idx)} outlier {dose_col} values. "
+                              "We set the value and the following eight hours of data to nan.")
+                        rows_to_nan = []
+                        for idx in bad_idx:
+                            loc = sorted_group.index.get_loc(idx)  # safe unless duplicates exist
+                            rows_to_nan.extend(range(loc, loc + 96))
+                        rows_to_nan = [i for i in rows_to_nan if i < len(sorted_group)]
+                        insulin_col = sorted_group.columns.get_loc(dose_col)
+                        sorted_group.iloc[rows_to_nan, insulin_col] = np.nan
+            df.loc[sorted_group.index, :] = sorted_group
+
             if patient_id in expansion_dict:
                 expansion_row = expansion_dict[patient_id]
                 # Update matching columns
@@ -288,9 +321,6 @@ def process_s3_data(df_expansion_data_copy, dataset_name, bucket_name='replica-g
                         if pd.notna(expansion_value):
                             df.loc[df['id'] == patient_id, col] = expansion_value
 
-            # Data cleaning: sort by date while preserving original indices
-            sorted_group = group.sort_values('date')
-            
             if len(sorted_group) > 0:
                 # Step 1: Replace zeros with NaN for insulin columns
                 # Ensure first and last non-zero values are preserved
@@ -348,20 +378,54 @@ def process_s3_data(df_expansion_data_copy, dataset_name, bucket_name='replica-g
         print("\nStep 3: Converting weight and height units...")
         weight_cols = [col for col in df.columns if 'weight' in col.lower()]
         height_cols = [col for col in df.columns if 'height' in col.lower()]
-        
-        for weight_col in weight_cols:
-            if weight_col in df.columns and df[weight_col].mean() < 120:  # Likely kg
-                df[weight_col] = df[weight_col] * 2.20462
-                print(f"✓ Converted {weight_col} from kg to lbs")
+
+        mean_age = 30
+        if 'age' in df.columns:
+            mean_age = df['age'].mean()
+        if mean_age > 15:
+            for weight_col in weight_cols:
+                if weight_col in df.columns and df[weight_col].mean() < 110:  # Likely kg
+                    df[weight_col] = df[weight_col] * 2.20462
+                    print(f"✓ Converted {weight_col} from kg to lbs")
+        else:
+            for weight_col in weight_cols:
+                if weight_col in df.columns and df[weight_col].mean() < 70:  # Likely kg
+                    df[weight_col] = df[weight_col] * 2.20462
+                    print(f"✓ Converted {weight_col} from kg to lbs")
         
         for height_col in height_cols:
             if height_col in df.columns and df[height_col].mean() > 50:  # Likely cm
                 df[height_col] = df[height_col] / 30.48
                 print(f"✓ Converted {height_col} from cm to feet")
 
+        # Set outlier carbs to nan
+        if 'carbs' in df.columns:
+            mask = (df['carbs'] < 0) & (df['carbs'] > 500)
+            n_outliers = len(df[mask])
+            total_values = len(df[df['carbs'] > 0])
+            df.loc[mask, 'carbs'] = np.nan
+            if n_outliers > 0:
+                print(f"🔴 Found {n_outliers} carbs outliers, out of {total_values}:")
+
+        # Set the outlier weight value in loop to nan
+        cond = (df["height"] > 5.5) & (df["weight"] < 30)
+        affected_rows = df[cond]
+        if not affected_rows.empty:
+            print("Weight set to NaN for rows where height > 5.5 and weight < 30.")
+            # Print unique ids and source files
+            if "id" in affected_rows.columns:
+                print("Unique IDs:")
+                print(affected_rows["id"].unique())
+            if "source_file" in affected_rows.columns:
+                print("Source files:")
+                print(affected_rows["source_file"].unique())
+            df.loc[cond, "weight"] = np.nan
+
+        df['source_file'] = dataset_name
+
         # Step 4: Save the updated df locally
         print("\nStep 4: Saving updated dataframe locally...")
-        output_file = f"{dataset_name}_s3_merged.csv"
+        output_file = f"{dataset_name}.csv"
         df.to_csv(output_file, index=False)
         print(f"✓ Saved merged S3 dataframe to: {output_file}")
         print(f"  Final merged dataset shape: {df.shape}")
